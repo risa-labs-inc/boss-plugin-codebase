@@ -1,23 +1,33 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
+import ai.rever.boss.plugin.api.FileSystemDataProvider
 import ai.rever.boss.plugin.api.PanelComponentWithUI
 import ai.rever.boss.plugin.api.PanelInfo
 import androidx.compose.runtime.Composable
 import com.arkivanov.decompose.ComponentContext
+import kotlinx.coroutines.CoroutineScope
 
 /**
  * Codebase panel component (Dynamic Plugin)
  *
- * This is a stub implementation. Full functionality requires
- * host services not yet exposed through PluginContext.
+ * Provides file browser functionality for project exploration.
  */
 class CodebaseComponent(
     ctx: ComponentContext,
-    override val panelInfo: PanelInfo
+    override val panelInfo: PanelInfo,
+    private val fileSystemDataProvider: FileSystemDataProvider?,
+    private val scope: CoroutineScope,
+    private val getWindowId: () -> String?,
+    private val getProjectPath: () -> String?
 ) : PanelComponentWithUI, ComponentContext by ctx {
 
     @Composable
     override fun Content() {
-        CodebaseContent()
+        CodebaseContent(
+            fileSystemDataProvider = fileSystemDataProvider,
+            scope = scope,
+            getWindowId = getWindowId,
+            getProjectPath = getProjectPath
+        )
     }
 }
