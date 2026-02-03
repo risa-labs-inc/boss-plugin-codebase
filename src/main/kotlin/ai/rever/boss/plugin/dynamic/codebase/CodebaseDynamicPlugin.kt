@@ -13,7 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 class CodebaseDynamicPlugin : DynamicPlugin {
     override val pluginId: String = "ai.rever.boss.plugin.dynamic.codebase"
     override val displayName: String = "Codebase (Dynamic)"
-    override val version: String = "1.0.2"
+    override val version: String = "1.0.3"
     override val description: String = "Browse and explore project files"
     override val author: String = "Risa Labs"
     override val url: String = "https://github.com/risa-labs-inc/boss-plugin-codebase"
