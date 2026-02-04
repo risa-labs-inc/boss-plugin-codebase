@@ -1,5 +1,6 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
+import ai.rever.boss.plugin.api.ContextMenuProvider
 import ai.rever.boss.plugin.api.FileSystemDataProvider
 import ai.rever.boss.plugin.api.PanelComponentWithUI
 import ai.rever.boss.plugin.api.PanelInfo
@@ -16,6 +17,7 @@ class CodebaseComponent(
     ctx: ComponentContext,
     override val panelInfo: PanelInfo,
     private val fileSystemDataProvider: FileSystemDataProvider?,
+    private val contextMenuProvider: ContextMenuProvider?,
     private val scope: CoroutineScope,
     private val getWindowId: () -> String?,
     private val getProjectPath: () -> String?
@@ -27,7 +29,8 @@ class CodebaseComponent(
             fileSystemDataProvider = fileSystemDataProvider,
             scope = scope,
             getWindowId = getWindowId,
-            getProjectPath = getProjectPath
+            getProjectPath = getProjectPath,
+            contextMenuProvider = contextMenuProvider
         )
     }
 }

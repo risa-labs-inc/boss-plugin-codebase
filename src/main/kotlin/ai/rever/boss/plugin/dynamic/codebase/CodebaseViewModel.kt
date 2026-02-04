@@ -184,4 +184,148 @@ class CodebaseViewModel(
         val projectPath = getProjectPath()
         return projectPath != null && projectPath.isNotEmpty()
     }
+
+    // ============================================================
+    // FILE OPERATION METHODS
+    // ============================================================
+
+    /**
+     * Create a new file.
+     *
+     * @param parentPath Path to the parent directory
+     * @param fileName Name of the new file
+     * @param onResult Callback with the result
+     */
+    fun createFile(parentPath: String, fileName: String, onResult: (Result<String>) -> Unit) {
+        scope.launch {
+            try {
+                val result = fileSystemDataProvider?.createFile(parentPath, fileName)
+                    ?: Result.failure(IllegalStateException("File system provider not available"))
+                result.onSuccess {
+                    // Refresh the parent directory to show the new file
+                    refreshDirectory(parentPath)
+                }
+                onResult(result)
+            } catch (e: Exception) {
+                onResult(Result.failure(e))
+            }
+        }
+    }
+
+    /**
+     * Create a new folder.
+     *
+     * @param parentPath Path to the parent directory
+     * @param folderName Name of the new folder
+     * @param onResult Callback with the result
+     */
+    fun createFolder(parentPath: String, folderName: String, onResult: (Result<String>) -> Unit) {
+        scope.launch {
+            try {
+                val result = fileSystemDataProvider?.createFolder(parentPath, folderName)
+                    ?: Result.failure(IllegalStateException("File system provider not available"))
+                result.onSuccess {
+                    // Refresh the parent directory to show the new folder
+                    refreshDirectory(parentPath)
+                }
+                onResult(result)
+            } catch (e: Exception) {
+                onResult(Result.failure(e))
+            }
+        }
+    }
+
+    /**
+     * Delete a file or folder.
+     *
+     * @param path Path to the file or folder to delete
+     * @param onResult Callback with the result
+     */
+    fun deleteItem(path: String, onResult: (Result<Unit>) -> Unit) {
+        scope.launch {
+            try {
+                val result = fileSystemDataProvider?.delete(path)
+                    ?: Result.failure(IllegalStateException("File system provider not available"))
+                result.onSuccess {
+                    // Refresh the parent directory to reflect the deletion
+                    val parentPath = path.substringBeforeLast('/')
+                    refreshDirectory(parentPath)
+                }
+                onResult(result)
+            } catch (e: Exception) {
+                onResult(Result.failure(e))
+            }
+        }
+    }
+
+    /**
+     * Rename a file or folder.
+     *
+     * @param path Path to the file or folder to rename
+     * @param newName The new name
+     * @param onResult Callback with the result
+     */
+    fun renameItem(path: String, newName: String, onResult: (Result<String>) -> Unit) {
+        scope.launch {
+            try {
+                val result = fileSystemDataProvider?.rename(path, newName)
+                    ?: Result.failure(IllegalStateException("File system provider not available"))
+                result.onSuccess {
+                    // Refresh the parent directory to reflect the rename
+                    val parentPath = path.substringBeforeLast('/')
+                    refreshDirectory(parentPath)
+                }
+                onResult(result)
+            } catch (e: Exception) {
+                onResult(Result.failure(e))
+            }
+        }
+    }
+
+    /**
+     * Copy a path to the clipboard.
+     *
+     * @param path The path to copy
+     */
+    fun copyPathToClipboard(path: String) {
+        fileSystemDataProvider?.copyToClipboard(path)
+    }
+
+    /**
+     * Copy a relative path to the clipboard.
+     *
+     * @param path The absolute path
+     */
+    fun copyRelativePathToClipboard(path: String) {
+        val projectPath = getProjectPath() ?: ""
+        val relativePath = if (projectPath.isNotEmpty() && path.startsWith(projectPath)) {
+            path.removePrefix(projectPath).removePrefix("/")
+        } else {
+            path
+        }
+        fileSystemDataProvider?.copyToClipboard(relativePath)
+    }
+
+    /**
+     * Reveal a file or folder in the system file manager.
+     *
+     * @param path Path to reveal
+     */
+    fun revealInFileManager(path: String) {
+        fileSystemDataProvider?.revealInFileManager(path)
+    }
+
+    /**
+     * Refresh a specific directory (clear cache and reload).
+     */
+    private fun refreshDirectory(path: String) {
+        childrenCache.remove(path)
+        // Reload if it's the root
+        val root = _rootNode.value
+        if (root != null && root.path == path) {
+            loadDirectory(path)
+        } else if (path in _expandedPaths.value) {
+            loadChildren(path)
+        }
+    }
 }
