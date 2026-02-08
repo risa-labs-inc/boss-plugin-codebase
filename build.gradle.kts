@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "ai.rever.boss.plugin.dynamic"
-version = "1.0.7"
+version = "1.0.8"
 
 java {
     toolchain {
@@ -29,8 +29,7 @@ repositories {
 
 dependencies {
     // Plugin API from Maven Central
-    // NOTE: Requires plugin-api 1.0.7 to be published first for file operation methods
-    implementation("com.risaboss:plugin-api-desktop:1.0.10")
+    implementation("com.risaboss:plugin-api-desktop:1.0.14")
     implementation("com.risaboss:plugin-ui-core-desktop:1.0.7")
     implementation("com.risaboss:plugin-scrollbar-desktop:1.0.7")
 

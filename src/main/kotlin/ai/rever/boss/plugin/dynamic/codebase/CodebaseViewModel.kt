@@ -1,149 +1,285 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
+import ai.rever.boss.plugin.api.DirectoryPickerProvider
 import ai.rever.boss.plugin.api.FileNodeData
 import ai.rever.boss.plugin.api.FileSystemDataProvider
 import ai.rever.boss.plugin.api.NodeLoadingStateData
+import ai.rever.boss.plugin.api.ProjectData
+import ai.rever.boss.plugin.api.SplitViewOperations
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.util.UUID
 
 /**
  * ViewModel for the Codebase panel.
  *
- * Manages file tree state and file system operations.
+ * This component provides file tree browsing with:
+ * - IntelliJ-style lazy loading
+ * - Compact middle packages display
+ * - LRU caching for file system nodes
  */
 class CodebaseViewModel(
     private val fileSystemDataProvider: FileSystemDataProvider?,
+    private val directoryPickerProvider: DirectoryPickerProvider?,
+    private val splitViewOperations: SplitViewOperations?,
     private val scope: CoroutineScope,
     private val getWindowId: () -> String?,
-    private val getProjectPath: () -> String?
+    private val getProjectPath: () -> String?,
+    private val onSelectProject: ((String, String) -> Unit)?
 ) {
-    private val _rootNode = MutableStateFlow<FileNodeData?>(null)
-    val rootNode: StateFlow<FileNodeData?> = _rootNode.asStateFlow()
+    private val _fileTree = MutableStateFlow<FileNode?>(null)
+    val fileTree: StateFlow<FileNode?> = _fileTree.asStateFlow()
 
-    private val _isLoading = MutableStateFlow(false)
-    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
-
-    private val _expandedPaths = MutableStateFlow<Set<String>>(emptySet())
+    private val _expandedPaths = MutableStateFlow(setOf<String>())
     val expandedPaths: StateFlow<Set<String>> = _expandedPaths.asStateFlow()
 
     private val _selectedPath = MutableStateFlow<String?>(null)
     val selectedPath: StateFlow<String?> = _selectedPath.asStateFlow()
 
-    private val _searchQuery = MutableStateFlow("")
-    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+    private val fileCache = FileIndexCache(
+        maxSize = 1000,
+        maxDepthInitial = 2,
+        fileSystemProvider = fileSystemDataProvider
+    )
 
-    private val _statusMessage = MutableStateFlow<String?>(null)
-    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
-
-    private val loadMutex = Mutex()
-
-    // Cache for loaded children
-    private val childrenCache = mutableMapOf<String, List<FileNodeData>>()
+    // Mutex to prevent race conditions during tree updates
+    private val treeUpdateMutex = Mutex()
 
     /**
-     * Initialize by loading the project root.
+     * Directories that should not be compactly loaded due to deep hierarchies.
      */
-    fun initialize() {
-        val projectPath = getProjectPath()
-        if (projectPath != null && projectPath.isNotEmpty()) {
-            loadDirectory(projectPath)
+    private val excludedDirectories = setOf(
+        "node_modules",
+        ".git",
+        ".gradle",
+        ".idea",
+        "__pycache__",
+        "target",
+        "build",
+        ".next",
+        "dist",
+        "vendor"
+    )
+
+    /**
+     * Load file tree for the given root path.
+     */
+    suspend fun loadFileTree(rootPath: String) {
+        if (rootPath.isEmpty()) {
+            _fileTree.value = null
+            return
         }
+
+        _fileTree.value = fileCache.getNode(rootPath)
     }
 
     /**
-     * Load a directory as the root.
+     * Toggle expansion state for a directory path.
      */
-    fun loadDirectory(path: String) {
-        scope.launch {
-            loadMutex.withLock {
-                try {
-                    _isLoading.value = true
-                    val node = fileSystemDataProvider?.scanDirectory(path)
-                    if (node != null) {
-                        _rootNode.value = node
-                        // Auto-expand root
-                        _expandedPaths.value = setOf(path)
-                    } else {
-                        _statusMessage.value = "Directory not found"
-                    }
-                } catch (e: Exception) {
-                    _statusMessage.value = "Failed to load directory: ${e.message}"
-                } finally {
-                    _isLoading.value = false
-                }
-            }
-        }
-    }
+    fun toggleExpanded(path: String) {
+        val expanded = _expandedPaths.value.toMutableSet()
 
-    /**
-     * Refresh the current root directory.
-     */
-    fun refresh() {
-        val root = _rootNode.value
-        if (root != null) {
-            childrenCache.clear()
-            loadDirectory(root.path)
-        }
-    }
-
-    /**
-     * Toggle expansion of a directory.
-     */
-    fun toggleExpand(path: String) {
-        val current = _expandedPaths.value
-        if (path in current) {
-            _expandedPaths.value = current - path
+        if (expanded.contains(path)) {
+            expanded.remove(path)
+            _expandedPaths.value = expanded
         } else {
-            _expandedPaths.value = current + path
-            // Load children if not cached
-            if (path !in childrenCache) {
-                loadChildren(path)
+            expanded.add(path)
+            _expandedPaths.value = expanded
+
+            scope.launch {
+                loadNodeChildren(path)
             }
         }
     }
 
     /**
-     * Load children of a directory.
+     * Load children for a node asynchronously.
      */
-    private fun loadChildren(path: String) {
-        scope.launch {
-            try {
-                val node = fileSystemDataProvider?.scanDirectory(path)
-                if (node != null) {
-                    childrenCache[path] = node.children
-                    // Update the tree by forcing a recomposition
-                    _rootNode.value = _rootNode.value
+    private suspend fun loadNodeChildren(path: String) {
+        val currentTree = _fileTree.value ?: return
+        val node = FileTreeUtils.findNodeByPath(currentTree, path)
+        if (node?.isDirectory != true) return
+
+        val endNode = node.getCompactEndNode()
+        var targetPath = endNode.path
+        if (endNode.isLoaded && endNode.children.isNotEmpty()) return
+
+        // Mark as CHECKING state
+        treeUpdateMutex.lock()
+        try {
+            val treeForUpdate = _fileTree.value ?: return
+            val nodeAfterLock = FileTreeUtils.findNodeByPath(treeForUpdate, path)
+            if (nodeAfterLock?.isDirectory != true) return
+
+            val endNodeAfterLock = nodeAfterLock.getCompactEndNode()
+            if (endNodeAfterLock.isLoaded && endNodeAfterLock.children.isNotEmpty()) return
+
+            targetPath = endNodeAfterLock.path
+
+            _fileTree.value = FileTreeUtils.updateNodeAtPath(treeForUpdate, targetPath) { existingNode ->
+                existingNode.copy(loadingState = NodeLoadingState.CHECKING)
+            }
+        } finally {
+            treeUpdateMutex.unlock()
+        }
+
+        // Load children
+        val scannedNode = try {
+            withContext(Dispatchers.IO) {
+                fileSystemDataProvider?.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0)
+            }
+        } catch (e: Exception) {
+            null
+        }
+
+        val loadedChildren = scannedNode?.children?.map { child ->
+            if (child.isDirectory) {
+                val hasKids = try {
+                    fileSystemDataProvider?.directoryHasChildren(child.path) ?: false
+                } catch (e: Exception) {
+                    false
                 }
-            } catch (e: Exception) {
-                _statusMessage.value = "Failed to load: ${e.message}"
+                convertToFileNode(child).copy(hasChildren = hasKids)
+            } else {
+                convertToFileNode(child)
             }
+        }
+
+        // Update tree with loaded children
+        treeUpdateMutex.lock()
+        try {
+            val latestTree = _fileTree.value ?: return
+
+            if (loadedChildren != null) {
+                _fileTree.value = FileTreeUtils.updateNodeAtPath(latestTree, targetPath) { existingNode ->
+                    existingNode.copy(
+                        children = loadedChildren,
+                        hasChildren = loadedChildren.isNotEmpty(),
+                        loadingState = NodeLoadingState.LOADED,
+                        loadDepth = 1
+                    )
+                }
+            } else {
+                _fileTree.value = FileTreeUtils.updateNodeAtPath(latestTree, targetPath) { existingNode ->
+                    existingNode.copy(
+                        children = emptyList(),
+                        hasChildren = false,
+                        loadingState = NodeLoadingState.LOADED
+                    )
+                }
+            }
+        } finally {
+            treeUpdateMutex.unlock()
+        }
+
+        // Compact loading for single-child directories
+        if (loadedChildren != null) {
+            compactLoadIfNeeded(loadedChildren, currentDepth = 0)
+        }
+    }
+
+    private suspend fun compactLoadIfNeeded(
+        children: List<FileNode>,
+        currentDepth: Int,
+        maxDepth: Int = 10
+    ) {
+        if (currentDepth >= maxDepth) return
+
+        if (children.size == 1 && children[0].isDirectory) {
+            val singleChild = children[0]
+
+            if (excludedDirectories.contains(singleChild.name)) {
+                return
+            }
+
+            loadNodeChildrenForCompact(singleChild.path, currentDepth + 1, maxDepth)
+        }
+    }
+
+    private suspend fun loadNodeChildrenForCompact(
+        path: String,
+        currentDepth: Int = 0,
+        maxDepth: Int = 10
+    ) {
+        val currentTree = _fileTree.value ?: return
+        val node = FileTreeUtils.findNodeByPath(currentTree, path)
+        if (node?.isDirectory != true) return
+        if (node.isLoaded) return
+
+        val scannedNode = try {
+            withContext(Dispatchers.IO) {
+                fileSystemDataProvider?.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0)
+            }
+        } catch (e: Exception) {
+            null
+        }
+
+        val loadedChildren = scannedNode?.children?.map { child ->
+            if (child.isDirectory) {
+                val hasKids = try {
+                    fileSystemDataProvider?.directoryHasChildren(child.path) ?: false
+                } catch (e: Exception) {
+                    false
+                }
+                convertToFileNode(child).copy(hasChildren = hasKids)
+            } else {
+                convertToFileNode(child)
+            }
+        }
+
+        treeUpdateMutex.lock()
+        try {
+            val latestTree = _fileTree.value ?: return
+            val nodeAfterLock = FileTreeUtils.findNodeByPath(latestTree, path)
+            if (nodeAfterLock?.isDirectory != true) return
+            if (nodeAfterLock.isLoaded) return
+
+            if (loadedChildren != null) {
+                _fileTree.value = FileTreeUtils.updateNodeAtPath(latestTree, path) { existingNode ->
+                    existingNode.copy(
+                        children = loadedChildren,
+                        hasChildren = loadedChildren.isNotEmpty(),
+                        loadingState = NodeLoadingState.LOADED,
+                        loadDepth = 1
+                    )
+                }
+            } else {
+                _fileTree.value = FileTreeUtils.updateNodeAtPath(latestTree, path) { existingNode ->
+                    existingNode.copy(
+                        children = emptyList(),
+                        hasChildren = false,
+                        loadingState = NodeLoadingState.LOADED
+                    )
+                }
+            }
+        } finally {
+            treeUpdateMutex.unlock()
+        }
+
+        if (loadedChildren != null) {
+            compactLoadIfNeeded(loadedChildren, currentDepth, maxDepth)
         }
     }
 
     /**
-     * Get children for a path (from cache or node).
+     * Clear the file cache.
      */
-    fun getChildren(path: String): List<FileNodeData> {
-        return childrenCache[path] ?: emptyList()
+    suspend fun clearCache() {
+        fileCache.clearCache()
     }
 
     /**
-     * Check if a directory has children.
+     * Clear the tree state.
      */
-    fun hasChildren(path: String): Boolean {
-        return fileSystemDataProvider?.directoryHasChildren(path) ?: false
-    }
-
-    /**
-     * Select a file or directory.
-     */
-    fun select(path: String) {
-        _selectedPath.value = path
+    fun clearTree() {
+        _fileTree.value = null
+        _expandedPaths.value = emptySet()
     }
 
     /**
@@ -157,17 +293,22 @@ class CodebaseViewModel(
     }
 
     /**
-     * Update search query.
+     * Select a file or directory.
      */
-    fun updateSearchQuery(query: String) {
-        _searchQuery.value = query
+    fun select(path: String) {
+        _selectedPath.value = path
     }
 
     /**
-     * Clear status message.
+     * Pick a directory and select it as the project.
      */
-    fun clearStatusMessage() {
-        _statusMessage.value = null
+    fun pickDirectory() {
+        directoryPickerProvider?.pickDirectory { path ->
+            path?.let {
+                val projectName = it.substringAfterLast('/').ifEmpty { "Unknown" }
+                onSelectProject?.invoke(projectName, it)
+            }
+        }
     }
 
     /**
@@ -185,52 +326,122 @@ class CodebaseViewModel(
         return projectPath != null && projectPath.isNotEmpty()
     }
 
-    // ============================================================
-    // FILE OPERATION METHODS
-    // ============================================================
+    /**
+     * Get the current project name.
+     */
+    fun getProjectName(): String {
+        val projectPath = getProjectPath() ?: return ""
+        return projectPath.substringAfterLast('/').ifEmpty { "Project" }
+    }
 
     /**
-     * Create a new file.
+     * Create a new file in the specified directory.
      *
-     * @param parentPath Path to the parent directory
-     * @param fileName Name of the new file
-     * @param onResult Callback with the result
+     * @param parentPath The parent directory path
+     * @param fileName The name of the file to create
+     * @param onResult Callback with the result (success path or error message)
      */
     fun createFile(parentPath: String, fileName: String, onResult: (Result<String>) -> Unit) {
         scope.launch {
-            try {
-                val result = fileSystemDataProvider?.createFile(parentPath, fileName)
-                    ?: Result.failure(IllegalStateException("File system provider not available"))
-                result.onSuccess {
-                    // Refresh the parent directory to show the new file
-                    refreshDirectory(parentPath)
-                }
-                onResult(result)
-            } catch (e: Exception) {
-                onResult(Result.failure(e))
+            val result = fileSystemDataProvider?.createFile(parentPath, fileName)
+                ?: Result.failure(IllegalStateException("File system provider not available"))
+            onResult(result)
+            if (result.isSuccess) {
+                refreshNode(parentPath)
             }
         }
     }
 
     /**
-     * Create a new folder.
+     * Create a new folder in the specified directory.
      *
-     * @param parentPath Path to the parent directory
-     * @param folderName Name of the new folder
-     * @param onResult Callback with the result
+     * @param parentPath The parent directory path
+     * @param folderName The name of the folder to create
+     * @param onResult Callback with the result (success path or error message)
      */
     fun createFolder(parentPath: String, folderName: String, onResult: (Result<String>) -> Unit) {
         scope.launch {
+            val result = fileSystemDataProvider?.createFolder(parentPath, folderName)
+                ?: Result.failure(IllegalStateException("File system provider not available"))
+            onResult(result)
+            if (result.isSuccess) {
+                refreshNode(parentPath)
+            }
+        }
+    }
+
+    /**
+     * Refresh a specific node in the tree after creation/deletion.
+     */
+    fun refreshNode(path: String) {
+        scope.launch {
+            // Mark as CHECKING state - check node validity inside the lock to prevent race conditions
+            treeUpdateMutex.lock()
             try {
-                val result = fileSystemDataProvider?.createFolder(parentPath, folderName)
-                    ?: Result.failure(IllegalStateException("File system provider not available"))
-                result.onSuccess {
-                    // Refresh the parent directory to show the new folder
-                    refreshDirectory(parentPath)
+                val treeForUpdate = _fileTree.value ?: return@launch
+                val node = FileTreeUtils.findNodeByPath(treeForUpdate, path)
+                if (node?.isDirectory != true) return@launch
+
+                _fileTree.value = FileTreeUtils.updateNodeAtPath(treeForUpdate, path) { existingNode ->
+                    existingNode.copy(loadingState = NodeLoadingState.CHECKING)
                 }
-                onResult(result)
+            } finally {
+                treeUpdateMutex.unlock()
+            }
+
+            // Reload children on IO dispatcher
+            val loadedChildren = try {
+                withContext(Dispatchers.IO) {
+                    val scannedNode = fileSystemDataProvider?.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0)
+                    scannedNode?.children?.map { child ->
+                        if (child.isDirectory) {
+                            val hasKids = try {
+                                fileSystemDataProvider?.directoryHasChildren(child.path) ?: false
+                            } catch (e: Exception) {
+                                false
+                            }
+                            convertToFileNode(child).copy(hasChildren = hasKids)
+                        } else {
+                            convertToFileNode(child)
+                        }
+                    }
+                }
             } catch (e: Exception) {
-                onResult(Result.failure(e))
+                null
+            }
+
+            // Update tree with refreshed children
+            treeUpdateMutex.lock()
+            try {
+                val latestTree = _fileTree.value ?: return@launch
+
+                if (loadedChildren != null) {
+                    _fileTree.value = FileTreeUtils.updateNodeAtPath(latestTree, path) { existingNode ->
+                        existingNode.copy(
+                            children = loadedChildren,
+                            hasChildren = loadedChildren.isNotEmpty(),
+                            loadingState = NodeLoadingState.LOADED,
+                            loadDepth = 1
+                        )
+                    }
+                } else {
+                    _fileTree.value = FileTreeUtils.updateNodeAtPath(latestTree, path) { existingNode ->
+                        existingNode.copy(
+                            children = emptyList(),
+                            hasChildren = false,
+                            loadingState = NodeLoadingState.LOADED
+                        )
+                    }
+                }
+            } finally {
+                treeUpdateMutex.unlock()
+            }
+
+            // Make sure the node is expanded
+            val expanded = _expandedPaths.value.toMutableSet()
+            if (!expanded.contains(path)) {
+                expanded.add(path)
+                _expandedPaths.value = expanded
             }
         }
     }
@@ -238,22 +449,20 @@ class CodebaseViewModel(
     /**
      * Delete a file or folder.
      *
-     * @param path Path to the file or folder to delete
+     * @param path The path to delete
      * @param onResult Callback with the result
      */
     fun deleteItem(path: String, onResult: (Result<Unit>) -> Unit) {
         scope.launch {
-            try {
-                val result = fileSystemDataProvider?.delete(path)
-                    ?: Result.failure(IllegalStateException("File system provider not available"))
-                result.onSuccess {
-                    // Refresh the parent directory to reflect the deletion
-                    val parentPath = path.substringBeforeLast('/')
-                    refreshDirectory(parentPath)
+            val result = fileSystemDataProvider?.delete(path)
+                ?: Result.failure(IllegalStateException("File system provider not available"))
+            onResult(result)
+            if (result.isSuccess) {
+                // Refresh parent directory
+                val parentPath = path.substringBeforeLast('/')
+                if (parentPath.isNotEmpty()) {
+                    refreshNode(parentPath)
                 }
-                onResult(result)
-            } catch (e: Exception) {
-                onResult(Result.failure(e))
             }
         }
     }
@@ -261,42 +470,59 @@ class CodebaseViewModel(
     /**
      * Rename a file or folder.
      *
-     * @param path Path to the file or folder to rename
+     * @param path The current path
      * @param newName The new name
-     * @param onResult Callback with the result
+     * @param onResult Callback with the result (new path or error)
      */
     fun renameItem(path: String, newName: String, onResult: (Result<String>) -> Unit) {
         scope.launch {
-            try {
-                val result = fileSystemDataProvider?.rename(path, newName)
-                    ?: Result.failure(IllegalStateException("File system provider not available"))
-                result.onSuccess {
-                    // Refresh the parent directory to reflect the rename
-                    val parentPath = path.substringBeforeLast('/')
-                    refreshDirectory(parentPath)
+            val result = fileSystemDataProvider?.rename(path, newName)
+                ?: Result.failure(IllegalStateException("File system provider not available"))
+            onResult(result)
+            if (result.isSuccess) {
+                // Refresh parent directory
+                val parentPath = path.substringBeforeLast('/')
+                if (parentPath.isNotEmpty()) {
+                    refreshNode(parentPath)
                 }
-                onResult(result)
-            } catch (e: Exception) {
-                onResult(Result.failure(e))
             }
         }
     }
 
     /**
-     * Copy a path to the clipboard.
-     *
-     * @param path The path to copy
+     * Reveal file or folder in system file manager.
      */
-    fun copyPathToClipboard(path: String) {
+    fun revealInFileManager(path: String) {
+        fileSystemDataProvider?.revealInFileManager(path)
+    }
+
+    /**
+     * Open terminal at directory.
+     */
+    fun openInTerminal(path: String) {
+        // Get the directory path (if file, use parent directory)
+        val file = java.io.File(path)
+        val directory = if (file.isDirectory) file.absolutePath else file.parent ?: return
+
+        // Use SplitViewOperations to add a terminal tab
+        val tabsComponent = splitViewOperations?.getActiveTabsComponent()
+        if (tabsComponent != null) {
+            val terminalId = "terminal-${UUID.randomUUID()}"
+            tabsComponent.addTerminalTab(terminalId, "Terminal", directory)
+        }
+    }
+
+    /**
+     * Copy absolute path to clipboard.
+     */
+    fun copyPath(path: String) {
         fileSystemDataProvider?.copyToClipboard(path)
     }
 
     /**
-     * Copy a relative path to the clipboard.
-     *
-     * @param path The absolute path
+     * Copy relative path (from project root) to clipboard.
      */
-    fun copyRelativePathToClipboard(path: String) {
+    fun copyRelativePath(path: String) {
         val projectPath = getProjectPath() ?: ""
         val relativePath = if (projectPath.isNotEmpty() && path.startsWith(projectPath)) {
             path.removePrefix(projectPath).removePrefix("/")
@@ -307,25 +533,21 @@ class CodebaseViewModel(
     }
 
     /**
-     * Reveal a file or folder in the system file manager.
-     *
-     * @param path Path to reveal
+     * Convert plugin API's FileNodeData to our FileNode type.
      */
-    fun revealInFileManager(path: String) {
-        fileSystemDataProvider?.revealInFileManager(path)
-    }
-
-    /**
-     * Refresh a specific directory (clear cache and reload).
-     */
-    private fun refreshDirectory(path: String) {
-        childrenCache.remove(path)
-        // Reload if it's the root
-        val root = _rootNode.value
-        if (root != null && root.path == path) {
-            loadDirectory(path)
-        } else if (path in _expandedPaths.value) {
-            loadChildren(path)
-        }
+    private fun convertToFileNode(data: FileNodeData): FileNode {
+        return FileNode(
+            name = data.name,
+            path = data.path,
+            isDirectory = data.isDirectory,
+            children = data.children.map { convertToFileNode(it) },
+            hasChildren = data.hasChildren ?: (data.isDirectory && data.children.isNotEmpty()),
+            loadingState = when (data.loadingState) {
+                NodeLoadingStateData.UNKNOWN -> NodeLoadingState.UNKNOWN
+                NodeLoadingStateData.CHECKING -> NodeLoadingState.CHECKING
+                NodeLoadingStateData.LOADED -> NodeLoadingState.LOADED
+            },
+            loadDepth = data.loadDepth
+        )
     }
 }
