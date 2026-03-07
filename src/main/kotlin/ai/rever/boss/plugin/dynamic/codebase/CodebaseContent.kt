@@ -223,6 +223,9 @@ fun CodebaseContent(
                             onCopyRelativePath = { path -> viewModel.copyRelativePath(path) },
                             onRevealInFileManager = { path -> viewModel.revealInFileManager(path) },
                             onOpenInTerminal = { path -> viewModel.openInTerminal(path) },
+                            onOpenInEditor = { path -> viewModel.openFileInEditor(path) },
+                            onOpenInBrowser = { path -> viewModel.openFileInBrowser(path) },
+                            onOpenWithDefaultApp = { path -> viewModel.openWithDefaultApp(path) },
                             contextMenuProvider = contextMenuProvider
                         )
                     }
@@ -373,6 +376,9 @@ fun FileTreeItem(
     onCopyRelativePath: (String) -> Unit = {},
     onRevealInFileManager: (String) -> Unit = {},
     onOpenInTerminal: (String) -> Unit = {},
+    onOpenInEditor: (String) -> Unit = {},
+    onOpenInBrowser: (String) -> Unit = {},
+    onOpenWithDefaultApp: (String) -> Unit = {},
     contextMenuProvider: ContextMenuProvider?
 ) {
     // IntelliJ's compact middle packages pattern
@@ -392,49 +398,77 @@ fun FileTreeItem(
     val itemPath = endNode.path
     val itemName = if (node.isDirectory) compactDisplayName else node.name
 
-    // Build context menu items (IntelliJ-style order) - 8 items total
-    val contextMenuItems = listOf(
-        ContextMenuItemData(
+    // Build context menu items (IntelliJ-style order)
+    val contextMenuItems = buildList {
+        add(ContextMenuItemData(
             label = "New File",
             icon = Icons.AutoMirrored.Outlined.NoteAdd,
             onClick = { onCreateFile(targetDirectory) }
-        ),
-        ContextMenuItemData(
+        ))
+        add(ContextMenuItemData(
             label = "New Folder",
             icon = Icons.Outlined.CreateNewFolder,
             onClick = { onCreateFolder(targetDirectory) }
-        ),
-        ContextMenuItemData(
+        ))
+        add(ContextMenuItemData(
             label = "Copy Path",
             icon = Icons.Outlined.ContentCopy,
             onClick = { onCopyPath(itemPath) }
-        ),
-        ContextMenuItemData(
+        ))
+        add(ContextMenuItemData(
             label = "Copy Relative Path",
             icon = Icons.Outlined.ContentCopy,
             onClick = { onCopyRelativePath(itemPath) }
-        ),
-        ContextMenuItemData(
+        ))
+        add(ContextMenuItemData(
             label = getRevealInFileManagerLabel(),
             icon = Icons.AutoMirrored.Outlined.OpenInNew,
             onClick = { onRevealInFileManager(itemPath) }
-        ),
-        ContextMenuItemData(
+        ))
+        add(ContextMenuItemData(
             label = "Open in Terminal",
             icon = Icons.Outlined.Terminal,
             onClick = { onOpenInTerminal(itemPath) }
-        ),
-        ContextMenuItemData(
+        ))
+        if (!node.isDirectory) {
+            add(ContextMenuItemData(
+                label = "Open With",
+                icon = Icons.AutoMirrored.Outlined.OpenInNew,
+                subMenu = listOf(
+                    ContextMenuItemData(
+                        label = "Editor",
+                        icon = Icons.Outlined.Code,
+                        onClick = { onOpenInEditor(itemPath) }
+                    ),
+                    ContextMenuItemData(
+                        label = "Browser",
+                        icon = Icons.Outlined.Language,
+                        onClick = { onOpenInBrowser(itemPath) }
+                    ),
+                    ContextMenuItemData(
+                        label = "Terminal",
+                        icon = Icons.Outlined.Terminal,
+                        onClick = { onOpenInTerminal(itemPath) }
+                    ),
+                    ContextMenuItemData(
+                        label = "Default App",
+                        icon = Icons.AutoMirrored.Outlined.OpenInNew,
+                        onClick = { onOpenWithDefaultApp(itemPath) }
+                    )
+                )
+            ))
+        }
+        add(ContextMenuItemData(
             label = "Rename...",
             icon = Icons.Outlined.DriveFileRenameOutline,
             onClick = { onRename(itemPath, node.name) }
-        ),
-        ContextMenuItemData(
+        ))
+        add(ContextMenuItemData(
             label = "Delete",
             icon = Icons.Outlined.Delete,
             onClick = { onDelete(itemPath, itemName) }
-        )
-    )
+        ))
+    }
 
     val baseModifier = Modifier
         .fillMaxWidth()
@@ -564,6 +598,9 @@ fun FileTreeItem(
                             onCopyRelativePath = onCopyRelativePath,
                             onRevealInFileManager = onRevealInFileManager,
                             onOpenInTerminal = onOpenInTerminal,
+                            onOpenInEditor = onOpenInEditor,
+                            onOpenInBrowser = onOpenInBrowser,
+                            onOpenWithDefaultApp = onOpenWithDefaultApp,
                             contextMenuProvider = contextMenuProvider
                         )
                     }

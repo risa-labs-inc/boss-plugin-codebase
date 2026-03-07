@@ -293,6 +293,36 @@ class CodebaseViewModel(
     }
 
     /**
+     * Force-open a file in the browser tab (for images, PDFs, etc.).
+     */
+    fun openFileInBrowser(path: String) {
+        val fileName = path.substringAfterLast('/')
+        splitViewOperations?.openFileInBrowser(path, fileName)
+    }
+
+    /**
+     * Force-open a file in the code editor (overriding smart routing).
+     */
+    fun openFileInEditor(path: String) {
+        val fileName = path.substringAfterLast('/')
+        splitViewOperations?.openFileInEditor(path, fileName)
+    }
+
+    /**
+     * Open a file with the system default application.
+     */
+    fun openWithDefaultApp(path: String) {
+        try {
+            val file = java.io.File(path)
+            if (file.exists()) {
+                java.awt.Desktop.getDesktop().open(file)
+            }
+        } catch (_: Exception) {
+            // Silently fail if no default app is configured
+        }
+    }
+
+    /**
      * Select a file or directory.
      */
     fun select(path: String) {
@@ -503,12 +533,13 @@ class CodebaseViewModel(
         // Get the directory path (if file, use parent directory)
         val file = java.io.File(path)
         val directory = if (file.isDirectory) file.absolutePath else file.parent ?: return
+        val initialCommand = if (!file.isDirectory) "\"${file.absolutePath}\"" else null
 
         // Use SplitViewOperations to add a terminal tab
         val tabsComponent = splitViewOperations?.getActiveTabsComponent()
         if (tabsComponent != null) {
             val terminalId = "terminal-${UUID.randomUUID()}"
-            tabsComponent.addTerminalTab(terminalId, "Terminal", directory)
+            tabsComponent.addTerminalTab(terminalId, "Terminal", directory, initialCommand)
         }
     }
 
