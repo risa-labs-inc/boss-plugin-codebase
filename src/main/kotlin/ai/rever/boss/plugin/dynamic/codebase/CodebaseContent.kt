@@ -4,6 +4,8 @@ import ai.rever.boss.plugin.api.ContextMenuProvider
 import ai.rever.boss.plugin.api.DirectoryPickerProvider
 import ai.rever.boss.plugin.api.FileSystemDataProvider
 import ai.rever.boss.plugin.api.SplitViewOperations
+import ai.rever.boss.plugin.ui.BossTheme
+import ai.rever.boss.plugin.ui.BossThemeColors
 import ai.rever.boss.plugin.ui.ContextMenuItemData
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -38,15 +40,17 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.CoroutineScope
 
-// UI colors matching bundled plugin (IntelliJ dark theme)
-private val BossDarkBackground = Color(0xFF1E1F22)
-private val BossDarkBorder = Color(0xFF3C3F41)
-private val BossDarkTextSecondary = Color(0xFF8C8C8C)
-private val BossHeaderColor = Color(0xFF2B2D30)
-private val BossAccentBlue = Color(0xFF365880)
-private val BossLinkBlue = Color(0xFF6B9EFF)
-private val BossErrorRed = Color(0xFFE74856)
-private val BossTextColor = Color(0xFFCCCCCC)
+// UI chrome colors now consume reactive BOSS theme tokens so the panel
+// re-skins automatically when the host theme changes. These are thin aliases
+// onto BossThemeColors so the existing call sites keep their descriptive names.
+private val BossDarkBackground: Color get() = BossThemeColors.BackgroundColor
+private val BossDarkBorder: Color get() = BossThemeColors.BorderColor
+private val BossDarkTextSecondary: Color get() = BossThemeColors.TextSecondary
+private val BossHeaderColor: Color get() = BossThemeColors.SurfaceColor
+private val BossAccentBlue: Color get() = BossThemeColors.AccentColor
+private val BossLinkBlue: Color get() = BossThemeColors.AccentColor
+private val BossErrorRed: Color get() = BossThemeColors.ErrorColor
+private val BossTextColor: Color get() = BossThemeColors.TextPrimary
 
 /**
  * Main content composable for the Codebase panel.
@@ -100,6 +104,7 @@ fun CodebaseContent(
         }
     }
 
+    BossTheme {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -129,7 +134,7 @@ fun CodebaseContent(
                         text = "No project opened",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Color.White
+                        color = BossThemeColors.TextPrimary
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -147,7 +152,7 @@ fun CodebaseContent(
                         onClick = { viewModel.pickDirectory() },
                         colors = ButtonDefaults.buttonColors(
                             backgroundColor = BossAccentBlue,
-                            contentColor = Color.White
+                            contentColor = BossThemeColors.TextPrimary
                         ),
                         shape = RoundedCornerShape(4.dp),
                         modifier = Modifier.height(32.dp)
@@ -189,7 +194,7 @@ fun CodebaseContent(
                         text = projectName,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Color.White
+                        color = BossThemeColors.TextPrimary
                     )
                 }
             }
@@ -354,6 +359,7 @@ fun CodebaseContent(
                 }
             }
         )
+    }
     }
 }
 
@@ -697,7 +703,7 @@ private fun CreateItemDialog(
                         text = title,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Color.White
+                        color = BossThemeColors.TextPrimary
                     )
                 }
 
@@ -714,7 +720,7 @@ private fun CreateItemDialog(
                     singleLine = true,
                     textStyle = LocalTextStyle.current.copy(
                         fontSize = 13.sp,
-                        color = Color.White
+                        color = BossThemeColors.TextPrimary
                     ),
                     cursorBrush = SolidColor(BossLinkBlue),
                     modifier = Modifier
@@ -777,9 +783,9 @@ private fun CreateItemDialog(
                         enabled = inputValue.isNotBlank() && validateFileName(inputValue) == null,
                         colors = ButtonDefaults.buttonColors(
                             backgroundColor = BossAccentBlue,
-                            contentColor = Color.White,
+                            contentColor = BossThemeColors.TextPrimary,
                             disabledBackgroundColor = BossAccentBlue.copy(alpha = 0.5f),
-                            disabledContentColor = Color.White.copy(alpha = 0.5f)
+                            disabledContentColor = BossThemeColors.TextPrimary.copy(alpha = 0.5f)
                         ),
                         shape = RoundedCornerShape(4.dp),
                         modifier = Modifier.height(32.dp)
@@ -826,7 +832,7 @@ private fun DeleteConfirmationDialog(
                         text = "Delete ${if (isDirectory) "Folder" else "File"}",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Color.White
+                        color = BossThemeColors.TextPrimary
                     )
                 }
 
@@ -876,7 +882,7 @@ private fun DeleteConfirmationDialog(
                         onClick = onConfirm,
                         colors = ButtonDefaults.buttonColors(
                             backgroundColor = BossErrorRed,
-                            contentColor = Color.White
+                            contentColor = BossThemeColors.TextPrimary
                         ),
                         shape = RoundedCornerShape(4.dp),
                         modifier = Modifier.height(32.dp)
@@ -929,7 +935,7 @@ private fun RenameItemDialog(
                         text = "Rename",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Color.White
+                        color = BossThemeColors.TextPrimary
                     )
                 }
 
@@ -939,7 +945,7 @@ private fun RenameItemDialog(
                     singleLine = true,
                     textStyle = LocalTextStyle.current.copy(
                         fontSize = 13.sp,
-                        color = Color.White
+                        color = BossThemeColors.TextPrimary
                     ),
                     cursorBrush = SolidColor(BossLinkBlue),
                     modifier = Modifier
@@ -1004,9 +1010,9 @@ private fun RenameItemDialog(
                                 validateFileName(inputValue) == null,
                         colors = ButtonDefaults.buttonColors(
                             backgroundColor = BossAccentBlue,
-                            contentColor = Color.White,
+                            contentColor = BossThemeColors.TextPrimary,
                             disabledBackgroundColor = BossAccentBlue.copy(alpha = 0.5f),
-                            disabledContentColor = Color.White.copy(alpha = 0.5f)
+                            disabledContentColor = BossThemeColors.TextPrimary.copy(alpha = 0.5f)
                         ),
                         shape = RoundedCornerShape(4.dp),
                         modifier = Modifier.height(32.dp)
