@@ -76,7 +76,8 @@ class CodebaseViewModel(
             return
         }
 
-        _fileTree.value = fileCache.getNode(rootPath)
+        // Callers may be on the Main dispatcher (e.g. LaunchedEffect) — keep the scan off it.
+        _fileTree.value = withContext(Dispatchers.IO) { fileCache.getNode(rootPath) }
     }
 
     /**
@@ -129,7 +130,8 @@ class CodebaseViewModel(
             treeUpdateMutex.unlock()
         }
 
-        // Load children
+        // Load children. The scan already fills hasChildren for edge directories,
+        // so no per-child directoryHasChildren round-trips are needed here.
         val scannedNode = try {
             withContext(Dispatchers.IO) {
                 fileSystemDataProvider?.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0)
@@ -138,18 +140,7 @@ class CodebaseViewModel(
             null
         }
 
-        val loadedChildren = scannedNode?.children?.map { child ->
-            if (child.isDirectory) {
-                val hasKids = try {
-                    fileSystemDataProvider?.directoryHasChildren(child.path) ?: false
-                } catch (e: Exception) {
-                    false
-                }
-                convertToFileNode(child).copy(hasChildren = hasKids)
-            } else {
-                convertToFileNode(child)
-            }
-        }
+        val loadedChildren = scannedNode?.children?.map { convertToFileNode(it) }
 
         // Update tree with loaded children
         treeUpdateMutex.lock()
@@ -220,18 +211,7 @@ class CodebaseViewModel(
             null
         }
 
-        val loadedChildren = scannedNode?.children?.map { child ->
-            if (child.isDirectory) {
-                val hasKids = try {
-                    fileSystemDataProvider?.directoryHasChildren(child.path) ?: false
-                } catch (e: Exception) {
-                    false
-                }
-                convertToFileNode(child).copy(hasChildren = hasKids)
-            } else {
-                convertToFileNode(child)
-            }
-        }
+        val loadedChildren = scannedNode?.children?.map { convertToFileNode(it) }
 
         treeUpdateMutex.lock()
         try {
@@ -423,18 +403,7 @@ class CodebaseViewModel(
             val loadedChildren = try {
                 withContext(Dispatchers.IO) {
                     val scannedNode = fileSystemDataProvider?.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0)
-                    scannedNode?.children?.map { child ->
-                        if (child.isDirectory) {
-                            val hasKids = try {
-                                fileSystemDataProvider?.directoryHasChildren(child.path) ?: false
-                            } catch (e: Exception) {
-                                false
-                            }
-                            convertToFileNode(child).copy(hasChildren = hasKids)
-                        } else {
-                            convertToFileNode(child)
-                        }
-                    }
+                    scannedNode?.children?.map { convertToFileNode(it) }
                 }
             } catch (e: Exception) {
                 null
@@ -572,7 +541,13 @@ class CodebaseViewModel(
             path = data.path,
             isDirectory = data.isDirectory,
             children = data.children.map { convertToFileNode(it) },
-            hasChildren = data.hasChildren ?: (data.isDirectory && data.children.isNotEmpty()),
+            // Providers that don't report hasChildren leave it unknown (null) so the
+            // expand chevron still shows (isAlwaysShowPlus) instead of hiding the dir.
+            hasChildren = data.hasChildren ?: when {
+                !data.isDirectory -> false
+                data.children.isNotEmpty() -> true
+                else -> null
+            },
             loadingState = when (data.loadingState) {
                 NodeLoadingStateData.UNKNOWN -> NodeLoadingState.UNKNOWN
                 NodeLoadingStateData.CHECKING -> NodeLoadingState.CHECKING

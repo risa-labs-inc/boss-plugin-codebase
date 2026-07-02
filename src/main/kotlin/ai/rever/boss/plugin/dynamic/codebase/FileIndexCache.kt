@@ -83,7 +83,13 @@ class FileIndexCache(
             path = data.path,
             isDirectory = data.isDirectory,
             children = data.children.map { convertToFileNode(it) },
-            hasChildren = data.hasChildren ?: (data.isDirectory && data.children.isNotEmpty()),
+            // Providers that don't report hasChildren leave it unknown (null) so the
+            // expand chevron still shows (isAlwaysShowPlus) instead of hiding the dir.
+            hasChildren = data.hasChildren ?: when {
+                !data.isDirectory -> false
+                data.children.isNotEmpty() -> true
+                else -> null
+            },
             loadingState = when (data.loadingState) {
                 NodeLoadingStateData.UNKNOWN -> NodeLoadingState.UNKNOWN
                 NodeLoadingStateData.CHECKING -> NodeLoadingState.CHECKING
