@@ -74,9 +74,12 @@ data class FileNode(
         val chain = mutableListOf(this)
         var current = this
 
+        // Only walk into loaded children: the chain's end node is what the UI renders,
+        // and an unloaded end node would show a loading state nothing is resolving.
         while (current.isLoaded &&
                current.children.size == 1 &&
-               current.children[0].isDirectory) {
+               current.children[0].isDirectory &&
+               current.children[0].isLoaded) {
             current = current.children[0]
             chain.add(current)
         }
@@ -100,7 +103,8 @@ data class FileNode(
         var current = this
         while (current.isLoaded &&
                current.children.size == 1 &&
-               current.children[0].isDirectory) {
+               current.children[0].isDirectory &&
+               current.children[0].isLoaded) {
             current = current.children[0]
         }
         return current
