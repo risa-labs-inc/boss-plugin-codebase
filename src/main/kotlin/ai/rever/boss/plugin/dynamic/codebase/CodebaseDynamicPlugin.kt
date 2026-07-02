@@ -63,5 +63,15 @@ class CodebaseDynamicPlugin : DynamicPlugin {
                 }
             )
         }
+        // Contribute codebase_* MCP tools; auto-removed on disable/unload.
+        context.registerMcpToolProvider(
+            CodebaseMcpToolProvider(
+                providerId = pluginId,
+                fileSystem = fileSystemDataProvider,
+                projects = projectDataProvider,
+                getWindowId = getWindowId,
+                getProjectPath = getProjectPath,
+            )
+        )
     }
 }
