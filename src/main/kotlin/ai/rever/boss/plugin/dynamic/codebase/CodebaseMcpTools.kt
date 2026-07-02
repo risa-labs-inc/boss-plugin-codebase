@@ -66,7 +66,10 @@ internal class CodebaseMcpToolProvider(
                 val fs = fileSystem ?: return@McpToolHandler unavailable()
                 val path = args.string("path")
                     ?: return@McpToolHandler McpToolResult("Missing required argument: path", isError = true)
-                val content = args.string("content") ?: ""
+                // Error rather than default to "" — a missing/null content must not
+                // silently truncate the target file to empty.
+                val content = args.string("content")
+                    ?: return@McpToolHandler McpToolResult("Missing required argument: content", isError = true)
                 fs.writeFile(path, content).fold(
                     onSuccess = { McpToolResult("Wrote ${content.length} chars to $path.") },
                     onFailure = { McpToolResult("Write failed: ${it.message}", isError = true) },
