@@ -34,10 +34,11 @@ repositories {
 dependencies {
     if (useLocalDependencies) {
         // Local development: use boss-plugin-api JAR from sibling repo
-        // (1.0.65+ needed for the FileSystemDataProvider showHidden opt-in)
-        compileOnly(files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.65.jar"))
+        // (1.0.66+ needed for the FileSystemDataProvider showHidden opt-in —
+        // the release workflow published the opt-in as v1.0.66)
+        compileOnly(files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.66.jar"))
         // compileOnly isn't visible to the test compilation/runtime
-        testImplementation(files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.65.jar"))
+        testImplementation(files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.66.jar"))
     } else {
         // CI: use downloaded JAR
         compileOnly(files("build/downloaded-deps/boss-plugin-api.jar"))

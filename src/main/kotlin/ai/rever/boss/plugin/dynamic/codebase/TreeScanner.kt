@@ -11,7 +11,7 @@ import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
  * Read-side scan facade (issue #6).
  *
  * Routes tree scans through the host provider when it honors the showHidden
- * flag (api >= 1.0.65 with supportsHiddenEntries = true), and falls back to
+ * flag (api >= 1.0.66 with supportsHiddenEntries = true), and falls back to
  * the plugin-local [LocalFileScanner] on older hosts.
  *
  * REFLECTION, NOT STATIC CALLS: the host's BinaryCompatibilityValidator

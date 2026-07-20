@@ -9,7 +9,7 @@ import java.nio.file.Paths
 /**
  * Plugin-local file scanner — now the FALLBACK path only.
  *
- * As of boss-plugin-api 1.0.65 the provider has a showHidden opt-in
+ * As of boss-plugin-api 1.0.66 the provider has a showHidden opt-in
  * (supportsHiddenEntries), and [TreeScanner] routes scans through the host
  * whenever it advertises support. This copy serves hosts older than that.
  * Mirrors the host scanner's behavior (sorting, hasChildren, loading
