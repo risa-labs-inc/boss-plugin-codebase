@@ -39,8 +39,11 @@ class CodebaseViewModel(
     private val _expandedPaths = MutableStateFlow(setOf<String>())
     val expandedPaths: StateFlow<Set<String>> = _expandedPaths.asStateFlow()
 
-    private val _selectedPath = MutableStateFlow<String?>(null)
-    val selectedPath: StateFlow<String?> = _selectedPath.asStateFlow()
+    private val _selectedPaths = MutableStateFlow<Set<String>>(emptySet())
+    val selectedPaths: StateFlow<Set<String>> = _selectedPaths.asStateFlow()
+
+    // Anchor row for shift-click range selection (the last plainly/cmd-selected row).
+    private var selectionAnchor: String? = null
 
     private val _showHidden = MutableStateFlow(false)
     val showHidden: StateFlow<Boolean> = _showHidden.asStateFlow()
@@ -284,6 +287,7 @@ class CodebaseViewModel(
     fun clearTree() {
         _fileTree.value = null
         _expandedPaths.value = emptySet()
+        clearSelection()
     }
 
     /**
@@ -327,10 +331,82 @@ class CodebaseViewModel(
     }
 
     /**
-     * Select a file or directory.
+     * Replace the selection with a single file or directory.
      */
-    fun select(path: String) {
-        _selectedPath.value = path
+    fun selectOnly(path: String) {
+        _selectedPaths.value = setOf(path)
+        selectionAnchor = path
+    }
+
+    /**
+     * Toggle one item in the selection (Cmd/Ctrl+click).
+     */
+    fun toggleSelection(path: String) {
+        val current = _selectedPaths.value.toMutableSet()
+        if (path in current) {
+            current.remove(path)
+            if (selectionAnchor == path) selectionAnchor = current.firstOrNull()
+        } else {
+            current.add(path)
+            selectionAnchor = path
+        }
+        _selectedPaths.value = current
+    }
+
+    /**
+     * Select the contiguous range of visible rows between the anchor and
+     * [path] (Shift+click). Falls back to single selection without an anchor.
+     */
+    fun selectRangeTo(path: String) {
+        val anchor = selectionAnchor ?: run {
+            selectOnly(path)
+            return
+        }
+        val rows = visibleRowPaths()
+        val anchorIndex = rows.indexOf(anchor)
+        val targetIndex = rows.indexOf(path)
+        if (anchorIndex == -1 || targetIndex == -1) {
+            selectOnly(path)
+            return
+        }
+        val range = rows.subList(minOf(anchorIndex, targetIndex), maxOf(anchorIndex, targetIndex) + 1)
+        _selectedPaths.value = range.toSet()
+        // The anchor stays put so further shift-clicks re-pivot around it.
+    }
+
+    fun clearSelection() {
+        _selectedPaths.value = emptySet()
+        selectionAnchor = null
+    }
+
+    /**
+     * Flatten the tree into the row order the UI renders: children of a
+     * directory are visible when its row path is expanded, and compacted
+     * chains ("a/b/c") contribute the end node's children under the chain
+     * top's path — mirroring FileTreeItem.
+     */
+    private fun visibleRowPaths(): List<String> {
+        val root = _fileTree.value ?: return emptyList()
+        val expanded = _expandedPaths.value
+        val result = mutableListOf<String>()
+        fun walk(node: FileNode) {
+            result.add(node.path)
+            if (node.isDirectory && expanded.contains(node.path)) {
+                node.getCompactEndNode().children.forEach { walk(it) }
+            }
+        }
+        root.children.forEach { walk(it) }
+        return result
+    }
+
+    /**
+     * Order a set of selected paths in visible-row order; paths no longer
+     * visible (collapsed ancestors) are appended at the end.
+     */
+    private fun orderSelected(paths: List<String>): List<String> {
+        val set = paths.toSet()
+        val visible = visibleRowPaths().filter { it in set }
+        return visible + paths.filterNot { it in visible.toSet() }
     }
 
     /**
@@ -481,6 +557,7 @@ class CodebaseViewModel(
                 ?: Result.failure(IllegalStateException("File system provider not available"))
             onResult(result)
             if (result.isSuccess) {
+                pruneSelection(listOf(path))
                 // Refresh parent directory
                 val parentPath = path.substringBeforeLast('/')
                 if (parentPath.isNotEmpty()) {
@@ -488,6 +565,58 @@ class CodebaseViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * Delete multiple files/folders (bulk operation).
+     *
+     * Paths nested under another path in the batch are skipped — deleting the
+     * ancestor removes them. Failures don't stop the batch; the result lists
+     * every item that failed.
+     */
+    fun deleteItems(paths: List<String>, onResult: (Result<Unit>) -> Unit) {
+        scope.launch {
+            val provider = fileSystemDataProvider
+            if (provider == null) {
+                onResult(Result.failure(IllegalStateException("File system provider not available")))
+                return@launch
+            }
+
+            val roots = paths.filter { p -> paths.none { other -> other != p && p.startsWith("$other/") } }
+            val deleted = mutableListOf<String>()
+            val failedNames = mutableListOf<String>()
+            for (path in roots) {
+                if (provider.delete(path).isSuccess) {
+                    deleted.add(path)
+                } else {
+                    failedNames.add(path.substringAfterLast('/'))
+                }
+            }
+
+            if (deleted.isNotEmpty()) {
+                pruneSelection(deleted)
+                deleted.map { it.substringBeforeLast('/') }
+                    .distinct()
+                    .filter { it.isNotEmpty() }
+                    .forEach { refreshNode(it) }
+            }
+
+            onResult(
+                if (failedNames.isEmpty()) Result.success(Unit)
+                else Result.failure(Exception("Failed to delete: ${failedNames.joinToString(", ")}"))
+            )
+        }
+    }
+
+    /**
+     * Drop deleted paths (and anything under them) from the selection.
+     */
+    private fun pruneSelection(deletedPaths: List<String>) {
+        val remaining = _selectedPaths.value.filterNot { selected ->
+            deletedPaths.any { selected == it || selected.startsWith("$it/") }
+        }.toSet()
+        _selectedPaths.value = remaining
+        if (selectionAnchor !in remaining) selectionAnchor = remaining.firstOrNull()
     }
 
     /**
@@ -554,6 +683,30 @@ class CodebaseViewModel(
             path
         }
         fileSystemDataProvider?.copyToClipboard(relativePath)
+    }
+
+    /**
+     * Copy multiple absolute paths to the clipboard, newline-separated,
+     * in visible-row order.
+     */
+    fun copyPaths(paths: List<String>) {
+        fileSystemDataProvider?.copyToClipboard(orderSelected(paths).joinToString("\n"))
+    }
+
+    /**
+     * Copy multiple project-relative paths to the clipboard, newline-separated,
+     * in visible-row order.
+     */
+    fun copyRelativePaths(paths: List<String>) {
+        val projectPath = getProjectPath() ?: ""
+        val relativePaths = orderSelected(paths).map { path ->
+            if (projectPath.isNotEmpty() && path.startsWith(projectPath)) {
+                path.removePrefix(projectPath).removePrefix("/")
+            } else {
+                path
+            }
+        }
+        fileSystemDataProvider?.copyToClipboard(relativePaths.joinToString("\n"))
     }
 
     /**
