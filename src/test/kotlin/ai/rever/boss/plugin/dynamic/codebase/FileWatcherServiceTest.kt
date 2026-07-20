@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.FileTime
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -62,8 +63,11 @@ class FileWatcherServiceTest {
     fun `file content edits do not change the signature`() {
         val file = Files.createFile(root.resolve("a.txt"))
         val before = signature()
-        Thread.sleep(20) // let mtime tick in case it ever mattered
         Files.writeString(file, "content changed")
+        // Push the file mtime unmistakably forward (deterministic even on
+        // coarse-mtime filesystems): file mtimes must not be part of the
+        // signature at all.
+        Files.setLastModifiedTime(file, FileTime.fromMillis(System.currentTimeMillis() + 5_000))
         assertEquals(before, signature())
     }
 
@@ -71,9 +75,37 @@ class FileWatcherServiceTest {
     fun `changes inside a subdirectory change the parent signature via dir mtime`() {
         val sub = Files.createDirectory(root.resolve("sub"))
         val before = signature()
-        Thread.sleep(20) // ensure the dir mtime moves past the creation stamp
         Files.createFile(sub.resolve("appeared.txt"))
+        // Model the mtime bump the OS performs on entry creation explicitly
+        // instead of racing its resolution (HFS+ is 1s-granular) — what's
+        // under test is that the signature tracks subdirectory mtimes.
+        Files.setLastModifiedTime(sub, FileTime.fromMillis(System.currentTimeMillis() + 5_000))
         assertNotEquals(before, signature())
+    }
+
+    @Test
+    fun `oversized directories use the cheap signature and still detect entry changes`() {
+        repeat(FileWatcherService.MAX_FULL_STAT_ENTRIES + 1) { i ->
+            Files.createFile(root.resolve("f$i.txt"))
+        }
+        val before = signature()
+        assertEquals(before, signature())
+
+        Files.createFile(root.resolve("one-more.txt"))
+        assertNotEquals(before, signature())
+    }
+
+    @Test
+    fun `oversized directories give up subdirectory mtime tracking (documented degradation)`() {
+        val sub = Files.createDirectory(root.resolve("sub"))
+        repeat(FileWatcherService.MAX_FULL_STAT_ENTRIES + 1) { i ->
+            Files.createFile(root.resolve("f$i.txt"))
+        }
+        val before = signature()
+        // A change inside a collapsed subdir is invisible to the cheap mode:
+        // neither the name set nor the parent dir's own mtime moves.
+        Files.setLastModifiedTime(sub, FileTime.fromMillis(System.currentTimeMillis() + 5_000))
+        assertEquals(before, signature())
     }
 
     @Test

@@ -32,7 +32,14 @@ import java.nio.file.attribute.BasicFileAttributes
  * - File content edits don't change the signature (the tree shows names
  *   only); subdirectory mtimes are included, because a dir's mtime changes
  *   when entries are added/removed inside it — this keeps the expand
- *   chevron of a visible-but-collapsed directory honest.
+ *   chevron of a visible-but-collapsed directory honest. Known limit: on
+ *   filesystems with coarse mtime resolution (HFS+: 1s) a change inside a
+ *   collapsed subdir landing in the same second as the recorded mtime can
+ *   go unnoticed until the next change bumps it.
+ * - Directories with more than [MAX_FULL_STAT_ENTRIES] direct entries fall
+ *   back to a name-only signature (plus the dir's own mtime) so one huge
+ *   flat directory can't turn every tick into thousands of stat calls;
+ *   only the collapsed-chevron nicety is lost for its subdirectories.
  * - Dot-entries are skipped when hidden files are off, so .git index churn
  *   from ordinary git commands doesn't trigger anything.
  * - With no watched dirs (no project open) the loop suspends entirely.
@@ -104,6 +111,13 @@ internal class FileWatcherService(
         private const val MISSING = 0L
 
         /**
+         * Per-directory ceiling on per-entry stat calls. Above this the
+         * signature degrades to names + the dir's own mtime (see class doc),
+         * so the per-tick cost of a watched dir is hard-bounded.
+         */
+        internal const val MAX_FULL_STAT_ENTRIES = 1024
+
+        /**
          * Order-independent 64-bit signature of a directory's DIRECT entries:
          * per entry the name and kind, plus mtime for subdirectory entries
          * (see class doc). Hash collisions are possible in principle; the
@@ -111,31 +125,68 @@ internal class FileWatcherService(
          */
         internal fun directorySignature(dir: String, showHidden: Boolean): Long {
             return try {
-                var signature = 1L
-                Files.newDirectoryStream(Path.of(dir)).use { stream ->
+                val path = Path.of(dir)
+                // Listing names is one cheap directory sweep; the per-entry
+                // stat is the real cost, so collect first and pick the mode.
+                val entries = ArrayList<Path>()
+                Files.newDirectoryStream(path).use { stream ->
                     for (entry in stream) {
                         val name = entry.fileName?.toString() ?: continue
                         if (!showHidden && name.startsWith(".")) continue
-                        val attrs = try {
-                            Files.readAttributes(
-                                entry,
-                                BasicFileAttributes::class.java,
-                                LinkOption.NOFOLLOW_LINKS
-                            )
-                        } catch (_: Exception) {
-                            continue // entry vanished mid-listing
-                        }
-                        var h = name.hashCode() * FNV_PRIME
-                        if (attrs.isDirectory) {
-                            h = h xor DIR_MARK xor (attrs.lastModifiedTime().toMillis() * 31L)
-                        }
-                        signature += h // '+' keeps the combine order-independent
+                        entries.add(entry)
                     }
                 }
-                signature
+                if (entries.size > MAX_FULL_STAT_ENTRIES) {
+                    cheapSignature(path, entries)
+                } else {
+                    fullSignature(entries)
+                }
             } catch (_: Exception) {
                 MISSING
             }
+        }
+
+        private fun fullSignature(entries: List<Path>): Long {
+            var signature = 1L
+            for (entry in entries) {
+                val name = entry.fileName?.toString() ?: continue
+                val attrs = try {
+                    Files.readAttributes(
+                        entry,
+                        BasicFileAttributes::class.java,
+                        LinkOption.NOFOLLOW_LINKS
+                    )
+                } catch (_: Exception) {
+                    continue // entry vanished mid-listing
+                }
+                var h = name.hashCode() * FNV_PRIME
+                if (attrs.isDirectory) {
+                    h = h xor DIR_MARK xor (attrs.lastModifiedTime().toMillis() * 31L)
+                }
+                signature += h // '+' keeps the combine order-independent
+            }
+            return signature
+        }
+
+        /**
+         * Fallback for oversized directories: entry names plus the dir's own
+         * mtime — bumped by any direct add/remove/rename, which also covers
+         * same-name kind swaps the name sum alone can't see. No per-entry
+         * stats. The distinct seed guarantees crossing the cap in either
+         * direction reads as a change.
+         */
+        private fun cheapSignature(dir: Path, entries: List<Path>): Long {
+            var signature = 2L
+            for (entry in entries) {
+                val name = entry.fileName?.toString() ?: continue
+                signature += name.hashCode() * FNV_PRIME
+            }
+            val dirMtime = try {
+                Files.getLastModifiedTime(dir, LinkOption.NOFOLLOW_LINKS).toMillis()
+            } catch (_: Exception) {
+                0L
+            }
+            return signature xor (dirMtime * 31L)
         }
 
         private const val FNV_PRIME = 1099511628211L

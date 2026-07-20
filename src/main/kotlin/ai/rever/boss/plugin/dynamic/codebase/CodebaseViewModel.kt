@@ -26,8 +26,8 @@ private val logger = BossLogger.forComponent("CodebaseViewModel")
 
 /**
  * Hard cap on watcher-registered directories so a pathological expand-all on
- * a huge tree can't turn the poll tick into real work. Shallow (shortest)
- * paths win the slots — they're the ones most likely on screen.
+ * a huge tree can't turn the poll tick into real work. Shallowest paths win
+ * the slots — they're the ones most likely on screen.
  */
 private const val MAX_WATCHED_DIRS = 512
 
@@ -124,7 +124,10 @@ class CodebaseViewModel(
         if (tree == null) return emptySet()
         val dirs = LinkedHashSet<String>()
         dirs.add(tree.path)
-        for (path in expanded.sortedBy { it.length }) {
+        // Depth (separator count), not string length: a deep path with short
+        // segment names must not beat a shallow one to the capped slots.
+        val byDepth = compareBy<String> { it.count { c -> c == PathUtils.platformSeparator } }
+        for (path in expanded.sortedWith(byDepth)) {
             if (dirs.size >= MAX_WATCHED_DIRS) break
             val node = FileTreeUtils.findNodeByPath(tree, path) ?: continue
             if (!node.isDirectory) continue
