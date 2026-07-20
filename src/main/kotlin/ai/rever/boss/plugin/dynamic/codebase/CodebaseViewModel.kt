@@ -6,6 +6,8 @@ import ai.rever.boss.plugin.api.FileSystemDataProvider
 import ai.rever.boss.plugin.api.NodeLoadingStateData
 import ai.rever.boss.plugin.api.ProjectData
 import ai.rever.boss.plugin.api.SplitViewOperations
+import ai.rever.boss.plugin.logging.BossLogger
+import ai.rever.boss.plugin.logging.LogCategory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +17,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.util.UUID
+
+private val logger = BossLogger.forComponent("CodebaseViewModel")
 
 /**
  * ViewModel for the Codebase panel.
@@ -328,6 +332,8 @@ class CodebaseViewModel(
         val windowId = getWindowId()
         if (windowId != null) {
             fileSystemDataProvider?.openFile(path, windowId)
+        } else {
+            logger.debug(LogCategory.FILE, "openFile skipped: no window id", mapOf("path" to path))
         }
     }
 
