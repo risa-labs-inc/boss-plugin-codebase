@@ -329,7 +329,7 @@ class CodebaseViewModel(
      * Force-open a file in the browser tab (for images, PDFs, etc.).
      */
     fun openFileInBrowser(path: String) {
-        val fileName = path.substringAfterLast('/')
+        val fileName = PathUtils.name(path)
         splitViewOperations?.openFileInBrowser(path, fileName)
     }
 
@@ -337,7 +337,7 @@ class CodebaseViewModel(
      * Force-open a file in the code editor (overriding smart routing).
      */
     fun openFileInEditor(path: String) {
-        val fileName = path.substringAfterLast('/')
+        val fileName = PathUtils.name(path)
         splitViewOperations?.openFileInEditor(path, fileName)
     }
 
@@ -424,7 +424,7 @@ class CodebaseViewModel(
     fun pickDirectory() {
         directoryPickerProvider?.pickDirectory { path ->
             path?.let {
-                val projectName = it.substringAfterLast('/').ifEmpty { "Unknown" }
+                val projectName = PathUtils.name(it).ifEmpty { "Unknown" }
                 onSelectProject?.invoke(projectName, it)
             }
         }
@@ -450,7 +450,7 @@ class CodebaseViewModel(
      */
     fun getProjectName(): String {
         val projectPath = getProjectPath() ?: return ""
-        return projectPath.substringAfterLast('/').ifEmpty { "Project" }
+        return PathUtils.name(projectPath).ifEmpty { "Project" }
     }
 
     /**
@@ -568,7 +568,7 @@ class CodebaseViewModel(
             if (result.isSuccess) {
                 pruneSelection(listOf(path))
                 // Refresh parent directory
-                val parentPath = path.substringBeforeLast('/')
+                val parentPath = PathUtils.parent(path)
                 if (parentPath.isNotEmpty()) {
                     refreshNode(parentPath)
                 }
@@ -601,14 +601,14 @@ class CodebaseViewModel(
                     if (provider.delete(path).isSuccess) {
                         deleted.add(path)
                     } else {
-                        failedNames.add(path.substringAfterLast('/'))
+                        failedNames.add(PathUtils.name(path))
                     }
                 }
             }
 
             if (deleted.isNotEmpty()) {
                 pruneSelection(deleted)
-                deleted.map { it.substringBeforeLast('/') }
+                deleted.map { PathUtils.parent(it) }
                     .distinct()
                     .filter { it.isNotEmpty() }
                     .forEach { refreshNode(it) }
@@ -626,7 +626,7 @@ class CodebaseViewModel(
      */
     private fun pruneSelection(deletedPaths: List<String>) {
         val remaining = _selectedPaths.value.filterNot { selected ->
-            deletedPaths.any { selected == it || selected.startsWith("$it/") }
+            deletedPaths.any { selected == it || PathUtils.isNestedUnder(selected, it) }
         }.toSet()
         _selectedPaths.value = remaining
         if (selectionAnchor !in remaining) selectionAnchor = remaining.firstOrNull()
@@ -646,7 +646,7 @@ class CodebaseViewModel(
             onResult(result)
             if (result.isSuccess) {
                 // Refresh parent directory
-                val parentPath = path.substringBeforeLast('/')
+                val parentPath = PathUtils.parent(path)
                 if (parentPath.isNotEmpty()) {
                     refreshNode(parentPath)
                 }
@@ -690,12 +690,7 @@ class CodebaseViewModel(
      */
     fun copyRelativePath(path: String) {
         val projectPath = getProjectPath() ?: ""
-        val relativePath = if (projectPath.isNotEmpty() && path.startsWith(projectPath)) {
-            path.removePrefix(projectPath).removePrefix("/")
-        } else {
-            path
-        }
-        fileSystemDataProvider?.copyToClipboard(relativePath)
+        fileSystemDataProvider?.copyToClipboard(PathUtils.relativize(path, projectPath))
     }
 
     /**
@@ -715,13 +710,8 @@ class CodebaseViewModel(
     fun copyRelativePaths(paths: List<String>) {
         val projectPath = getProjectPath() ?: ""
         val index = nodeIndex()
-        val relativePaths = orderSelected(paths).map { toCopyPath(it, index) }.map { path ->
-            if (projectPath.isNotEmpty() && path.startsWith(projectPath)) {
-                path.removePrefix(projectPath).removePrefix("/")
-            } else {
-                path
-            }
-        }
+        val relativePaths = orderSelected(paths).map { toCopyPath(it, index) }
+            .map { PathUtils.relativize(it, projectPath) }
         fileSystemDataProvider?.copyToClipboard(relativePaths.joinToString("\n"))
     }
 
@@ -734,7 +724,7 @@ class CodebaseViewModel(
         val index = nodeIndex()
         return orderSelected(paths).map { path ->
             val node = index[path]
-            if (node?.isDirectory == true) node.getCompactDisplayName() else path.substringAfterLast('/')
+            if (node?.isDirectory == true) node.getCompactDisplayName() else PathUtils.name(path)
         }
     }
 

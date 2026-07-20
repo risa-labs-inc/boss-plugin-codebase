@@ -114,7 +114,7 @@ internal class CodebaseMcpToolProvider(
                 val p = projects ?: return@McpToolHandler McpToolResult("Project provider unavailable.", isError = true)
                 val path = args.string("path")
                     ?: return@McpToolHandler McpToolResult("Missing required argument: path", isError = true)
-                val name = args.string("name") ?: path.substringAfterLast('/')
+                val name = args.string("name") ?: PathUtils.name(path)
                 p.selectProject(ProjectData(name = name, path = path))
                 McpToolResult("Selected project $name ($path).")
             },

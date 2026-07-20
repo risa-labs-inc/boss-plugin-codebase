@@ -96,7 +96,7 @@ fun CodebaseContent(
     }
 
     val projectPath = getProjectPath()
-    val projectName = projectPath?.substringAfterLast('/')?.ifEmpty { "Project" } ?: ""
+    val projectName = projectPath?.let { PathUtils.name(it) }?.ifEmpty { "Project" } ?: ""
     val hasProject = !projectPath.isNullOrEmpty()
 
     val tree by viewModel.fileTree.collectAsState()
@@ -495,7 +495,7 @@ fun FileTreeItem(
     val targetDirectory = if (node.isDirectory) {
         endNode.path
     } else {
-        node.path.substringBeforeLast('/')
+        PathUtils.parent(node.path)
     }
 
     // The actual path for this item (for operations like delete, rename, copy path)
@@ -882,7 +882,7 @@ private fun CreateItemDialog(
                 }
 
                 Text(
-                    text = "in: ${targetPath.substringAfterLast('/')}",
+                    text = "in: ${PathUtils.name(targetPath)}",
                     fontSize = 11.sp,
                     color = BossDarkTextSecondary,
                     modifier = Modifier.padding(bottom = 12.dp)

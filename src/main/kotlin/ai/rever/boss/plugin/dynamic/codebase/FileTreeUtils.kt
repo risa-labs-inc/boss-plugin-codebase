@@ -41,8 +41,11 @@ object FileTreeUtils {
      * Drops paths nested under another path in the list — operating on the
      * ancestor covers them (used by bulk delete).
      */
-    fun filterNestedPaths(paths: List<String>): List<String> =
-        paths.filter { p -> paths.none { other -> other != p && p.startsWith("$other/") } }
+    fun filterNestedPaths(
+        paths: List<String>,
+        separator: Char = PathUtils.platformSeparator
+    ): List<String> =
+        paths.filter { p -> paths.none { other -> other != p && PathUtils.isNestedUnder(p, other, separator) } }
 
     /**
      * Creates a new tree with the node at targetPath updated using the provided transform.
@@ -61,7 +64,7 @@ object FileTreeUtils {
         // Recursively update, creating new nodes along the path to the target
         return root.copy(
             children = root.children.map { child ->
-                if (targetPath.startsWith(child.path + "/") || targetPath == child.path) {
+                if (PathUtils.isNestedUnder(targetPath, child.path) || targetPath == child.path) {
                     updateNodeAtPath(child, targetPath, update)
                 } else {
                     child
