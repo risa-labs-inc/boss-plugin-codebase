@@ -336,9 +336,12 @@ fun CodebaseContent(
                 } else {
                     viewModel.createFile(targetPath, fileName) { result ->
                         result.fold(
-                            onSuccess = {
+                            onSuccess = { createdPath ->
                                 showCreateFileDialog = null
                                 errorMessage = null
+                                // Open the new file: routes .ipynb to the notebook panel and
+                                // other files to the editor (via the host's file router).
+                                viewModel.openFile(createdPath)
                             },
                             onFailure = { error ->
                                 errorMessage = error.message ?: "Failed to create file"
