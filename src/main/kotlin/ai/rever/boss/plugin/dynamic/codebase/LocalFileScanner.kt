@@ -17,15 +17,18 @@ import java.nio.file.Paths
  *
  * DRIFT RISK: this duplicates BossConsole's DesktopFileScanner — if that
  * changes (filter set, sorting, placeholder semantics), this copy silently
- * diverges. TODO: delete this file and go back through the provider if
- * FileSystemDataProvider ever gains a showHidden opt-in. Note writes,
- * deletes, renames, and opens still go through the host provider; only
- * read-side tree scans happen here.
+ * diverges; the unit tests only pin the copy, they can't detect divergence.
+ * Tracked in https://github.com/risa-labs-inc/boss-plugin-codebase/issues/6:
+ * delete this file and go back through the provider once
+ * FileSystemDataProvider gains a showHidden opt-in. Note writes, deletes,
+ * renames, and opens still go through the host provider; only read-side
+ * tree scans happen here.
  *
  * ACCESS CONTROL: verified (2026-07) that the host's FileSystemDataProviderImpl
  * is a plain Dispatchers.IO wrapper over the same unscoped platform scanner —
  * no project-root scoping or RBAC on reads — so scanning directly does not
- * bypass a security boundary. Revisit if the provider ever adds read scoping.
+ * bypass a security boundary. If the provider ever adds read scoping this
+ * becomes a bypass — revisit via issue #6 (same tracking issue as above).
  * (The host does canonical-path validation on writes; those stay on the provider.)
  *
  * PATH SEPARATORS: emits File.absolutePath verbatim, exactly like the host

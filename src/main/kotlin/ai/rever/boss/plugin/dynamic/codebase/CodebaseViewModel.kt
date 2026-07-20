@@ -99,7 +99,8 @@ class CodebaseViewModel(
         scope.launch {
             val rootPath = getProjectPath()
             if (rootPath.isNullOrEmpty()) return@launch
-            fileCache.clearCache()
+            // No clearCache() needed: FileIndexCache entries record their
+            // showHidden setting and a mismatched hit rescans.
             loadFileTree(rootPath)
             // Ancestors first (shorter paths) so children exist in the tree
             // by the time their own reload runs.
@@ -702,7 +703,8 @@ class CodebaseViewModel(
      * in visible-row order.
      */
     fun copyPaths(paths: List<String>) {
-        val resolved = orderSelected(paths).map { toCopyPath(it) }
+        val index = nodeIndex()
+        val resolved = orderSelected(paths).map { toCopyPath(it, index) }
         fileSystemDataProvider?.copyToClipboard(resolved.joinToString("\n"))
     }
 
@@ -712,7 +714,8 @@ class CodebaseViewModel(
      */
     fun copyRelativePaths(paths: List<String>) {
         val projectPath = getProjectPath() ?: ""
-        val relativePaths = orderSelected(paths).map { toCopyPath(it) }.map { path ->
+        val index = nodeIndex()
+        val relativePaths = orderSelected(paths).map { toCopyPath(it, index) }.map { path ->
             if (projectPath.isNotEmpty() && path.startsWith(projectPath)) {
                 path.removePrefix(projectPath).removePrefix("/")
             } else {
@@ -728,11 +731,26 @@ class CodebaseViewModel(
      * matching the single-item delete dialog.
      */
     fun displayNamesFor(paths: List<String>): List<String> {
-        val tree = _fileTree.value
+        val index = nodeIndex()
         return orderSelected(paths).map { path ->
-            val node = tree?.let { FileTreeUtils.findNodeByPath(it, path) }
+            val node = index[path]
             if (node?.isDirectory == true) node.getCompactDisplayName() else path.substringAfterLast('/')
         }
+    }
+
+    /**
+     * One tree walk producing a path→node lookup, so bulk operations resolve
+     * each selected item in O(1) instead of a findNodeByPath per item.
+     */
+    private fun nodeIndex(): Map<String, FileNode> {
+        val root = _fileTree.value ?: return emptyMap()
+        val index = mutableMapOf<String, FileNode>()
+        fun walk(node: FileNode) {
+            index[node.path] = node
+            node.children.forEach { walk(it) }
+        }
+        walk(root)
+        return index
     }
 
     /**
@@ -741,9 +759,8 @@ class CodebaseViewModel(
      * Keeps single and bulk copy in agreement on compacted rows; delete
      * intentionally differs (it removes the whole displayed chain).
      */
-    private fun toCopyPath(path: String): String {
-        val tree = _fileTree.value ?: return path
-        val node = FileTreeUtils.findNodeByPath(tree, path) ?: return path
+    private fun toCopyPath(path: String, index: Map<String, FileNode>): String {
+        val node = index[path] ?: return path
         return if (node.isDirectory) node.getCompactEndNode().path else node.path
     }
 

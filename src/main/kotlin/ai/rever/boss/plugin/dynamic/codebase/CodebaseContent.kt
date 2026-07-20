@@ -617,6 +617,11 @@ fun FileTreeItem(
         // highlight always matches what the context menu will act on.
         // Observed on the Initial pass without consuming, so the host's
         // context-menu gesture detection is unaffected.
+        // TIMING ASSUMPTION: menu items are baked into the modifier at
+        // composition; a row outside the selection already carries the
+        // single-item menu, so even if the menu opens before recomposition
+        // the shown items match the clicked row. Only the highlight depends
+        // on the state update landing first.
         .pointerInput(node.path, isSelected) {
             awaitPointerEventScope {
                 while (true) {
