@@ -8,6 +8,8 @@ import ai.rever.boss.plugin.api.McpToolProvider
 import ai.rever.boss.plugin.api.McpToolResult
 import ai.rever.boss.plugin.api.ProjectData
 import ai.rever.boss.plugin.api.ProjectDataProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * MCP tools contributed by the Codebase plugin: browse the project file tree,
@@ -25,15 +27,19 @@ internal class CodebaseMcpToolProvider(
     override fun tools(): List<McpToolDefinition> = listOf(
         McpToolDefinition(
             name = "codebase_tree",
-            description = "List the file tree under a directory (defaults to the current project root).",
+            description = "List the file tree under a directory (defaults to the current project root). " +
+                "Set include_hidden to also list dot-files/folders.",
             inputSchema = TREE_SCHEMA,
             handler = McpToolHandler { args ->
-                val fs = fileSystem ?: return@McpToolHandler unavailable()
                 val path = args.string("path") ?: getProjectPath()
                     ?: return@McpToolHandler McpToolResult("No path given and no project is open.", isError = true)
                 val depth = (args.int("depth") ?: 2).coerceIn(1, 6)
-                val root = fs.scanDirectoryWithDepth(path, depth, 0)
-                    ?: return@McpToolHandler McpToolResult("Could not scan: $path", isError = true)
+                val includeHidden = args.boolean("include_hidden") ?: false
+                // Same scanner as the panel tree, so MCP and UI agree on what
+                // "hidden" means (the host provider can't opt into dot-entries).
+                val root = withContext(Dispatchers.IO) {
+                    LocalFileScanner.scanDirectoryWithDepth(path, depth, 0, showHidden = includeHidden)
+                } ?: return@McpToolHandler McpToolResult("Could not scan: $path", isError = true)
                 val sb = StringBuilder()
                 renderTree(root, "", sb)
                 McpToolResult(sb.toString().trimEnd())
@@ -131,7 +137,7 @@ internal class CodebaseMcpToolProvider(
 
     private companion object {
         const val TREE_SCHEMA =
-            """{"type":"object","properties":{"path":{"type":"string","description":"Directory to list (default: project root)."},"depth":{"type":"integer","description":"Max depth 1-6 (default 2)."}}}"""
+            """{"type":"object","properties":{"path":{"type":"string","description":"Directory to list (default: project root)."},"depth":{"type":"integer","description":"Max depth 1-6 (default 2)."},"include_hidden":{"type":"boolean","description":"Also list hidden (dot) files and folders (default false)."}}}"""
         const val WRITE_SCHEMA =
             """{"type":"object","properties":{"path":{"type":"string","description":"File path to write."},"content":{"type":"string","description":"New file content."}},"required":["path","content"]}"""
         const val SELECT_PROJECT_SCHEMA =

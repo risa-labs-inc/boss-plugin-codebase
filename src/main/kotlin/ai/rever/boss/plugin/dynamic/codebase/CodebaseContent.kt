@@ -7,10 +7,15 @@ import ai.rever.boss.plugin.api.SplitViewOperations
 import ai.rever.boss.plugin.ui.BossTheme
 import ai.rever.boss.plugin.ui.BossThemeColors
 import ai.rever.boss.plugin.ui.ContextMenuItemData
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,15 +31,25 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.isMetaPressed
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.isShiftPressed
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -56,6 +71,7 @@ private val BossTextColor: Color get() = BossThemeColors.TextPrimary
  * Main content composable for the Codebase panel.
  * Ported from bundled plugin v8.16.22 with exact UI parity.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CodebaseContent(
     fileSystemDataProvider: FileSystemDataProvider?,
@@ -85,12 +101,15 @@ fun CodebaseContent(
 
     val tree by viewModel.fileTree.collectAsState()
     val expandedPaths by viewModel.expandedPaths.collectAsState()
+    val showHidden by viewModel.showHidden.collectAsState()
+    val selectedPaths by viewModel.selectedPaths.collectAsState()
     val listState = rememberLazyListState()
 
     // Dialog state for creating files/folders
     var showCreateFileDialog by remember { mutableStateOf<String?>(null) }
     var showCreateFolderDialog by remember { mutableStateOf<String?>(null) }
     var showDeleteDialog by remember { mutableStateOf<Pair<String, String>?>(null) } // (path, name)
+    var showBulkDeleteDialog by remember { mutableStateOf<List<String>?>(null) } // paths
     var showRenameDialog by remember { mutableStateOf<Pair<String, String>?>(null) } // (path, currentName)
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -194,19 +213,59 @@ fun CodebaseContent(
                         text = projectName,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                        color = BossThemeColors.TextPrimary
+                        color = BossThemeColors.TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
                     )
+                    TooltipArea(
+                        tooltip = {
+                            Surface(
+                                color = BossHeaderColor,
+                                shape = RoundedCornerShape(4.dp),
+                                elevation = 4.dp,
+                                border = BorderStroke(1.dp, BossDarkBorder)
+                            ) {
+                                Text(
+                                    text = if (showHidden) {
+                                        "Hide hidden files (dotfiles)"
+                                    } else {
+                                        "Show hidden files (dotfiles) — build/ and node_modules/ stay hidden"
+                                    },
+                                    fontSize = 11.sp,
+                                    color = BossTextColor,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = if (showHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                            contentDescription = if (showHidden) "Hide hidden files (dotfiles)" else "Show hidden files (dotfiles)",
+                            tint = if (showHidden) BossAccentBlue else BossDarkTextSecondary,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { viewModel.setShowHidden(!showHidden) }
+                        )
+                    }
                 }
             }
 
             Divider(color = BossDarkBorder)
 
-            // File tree
+            // File tree (tapping empty space below the rows clears the selection;
+            // row clicks are consumed by the rows, cancelling this detector)
             LazyColumn(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(top = 4.dp)
+                    .pointerInput(Unit) {
+                        detectTapGestures { viewModel.clearSelection() }
+                    }
             ) {
                 tree?.let { rootNode ->
                     items(rootNode.children, key = { it.path }) { node ->
@@ -214,7 +273,11 @@ fun CodebaseContent(
                             node = node,
                             level = 0,
                             expandedPaths = expandedPaths,
+                            selectedPaths = selectedPaths,
                             onToggleExpanded = viewModel::toggleExpanded,
+                            onSelectOnly = viewModel::selectOnly,
+                            onToggleSelect = viewModel::toggleSelection,
+                            onRangeSelect = viewModel::selectRangeTo,
                             onFileDoubleClick = { file ->
                                 if (!file.isDirectory) {
                                     viewModel.openFile(file.path)
@@ -231,6 +294,9 @@ fun CodebaseContent(
                             onOpenInEditor = { path -> viewModel.openFileInEditor(path) },
                             onOpenInBrowser = { path -> viewModel.openFileInBrowser(path) },
                             onOpenWithDefaultApp = { path -> viewModel.openWithDefaultApp(path) },
+                            onBulkCopyPaths = { paths -> viewModel.copyPaths(paths) },
+                            onBulkCopyRelativePaths = { paths -> viewModel.copyRelativePaths(paths) },
+                            onBulkDelete = { paths -> showBulkDeleteDialog = paths },
                             contextMenuProvider = contextMenuProvider
                         )
                     }
@@ -331,6 +397,31 @@ fun CodebaseContent(
         )
     }
 
+    // Bulk Delete Confirmation Dialog
+    showBulkDeleteDialog?.let { paths ->
+        BulkDeleteConfirmationDialog(
+            itemNames = viewModel.displayNamesFor(paths),
+            errorMessage = errorMessage,
+            onDismiss = {
+                showBulkDeleteDialog = null
+                errorMessage = null
+            },
+            onConfirm = {
+                viewModel.deleteItems(paths) { result ->
+                    result.fold(
+                        onSuccess = {
+                            showBulkDeleteDialog = null
+                            errorMessage = null
+                        },
+                        onFailure = { error ->
+                            errorMessage = error.message ?: "Failed to delete"
+                        }
+                    )
+                }
+            }
+        )
+    }
+
     // Rename Dialog
     showRenameDialog?.let { (path, currentName) ->
         RenameItemDialog(
@@ -366,13 +457,17 @@ fun CodebaseContent(
 /**
  * File tree item composable with IntelliJ-style compact paths.
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun FileTreeItem(
     node: FileNode,
     level: Int,
     expandedPaths: Set<String>,
+    selectedPaths: Set<String> = emptySet(),
     onToggleExpanded: (String) -> Unit,
+    onSelectOnly: (String) -> Unit = {},
+    onToggleSelect: (String) -> Unit = {},
+    onRangeSelect: (String) -> Unit = {},
     onFileDoubleClick: (FileNode) -> Unit,
     onCreateFile: (String) -> Unit = {},
     onCreateFolder: (String) -> Unit = {},
@@ -385,6 +480,9 @@ fun FileTreeItem(
     onOpenInEditor: (String) -> Unit = {},
     onOpenInBrowser: (String) -> Unit = {},
     onOpenWithDefaultApp: (String) -> Unit = {},
+    onBulkCopyPaths: (List<String>) -> Unit = {},
+    onBulkCopyRelativePaths: (List<String>) -> Unit = {},
+    onBulkDelete: (List<String>) -> Unit = {},
     contextMenuProvider: ContextMenuProvider?
 ) {
     // IntelliJ's compact middle packages pattern
@@ -404,8 +502,33 @@ fun FileTreeItem(
     val itemPath = endNode.path
     val itemName = if (node.isDirectory) compactDisplayName else node.name
 
-    // Build context menu items (IntelliJ-style order)
-    val contextMenuItems = buildList {
+    // Rows are identified by the top of their compact chain — matches tree keys
+    val isSelected = selectedPaths.contains(node.path)
+    val isMultiSelection = isSelected && selectedPaths.size > 1
+
+    // Build context menu items: bulk menu when right-clicking inside a
+    // multi-selection, IntelliJ-style single-item menu otherwise
+    val contextMenuItems = if (isMultiSelection) {
+        val selection = selectedPaths.toList()
+        val count = selection.size
+        buildList {
+            add(ContextMenuItemData(
+                label = "Copy $count Paths",
+                icon = Icons.Outlined.ContentCopy,
+                onClick = { onBulkCopyPaths(selection) }
+            ))
+            add(ContextMenuItemData(
+                label = "Copy $count Relative Paths",
+                icon = Icons.Outlined.ContentCopy,
+                onClick = { onBulkCopyRelativePaths(selection) }
+            ))
+            add(ContextMenuItemData(
+                label = "Delete $count Items...",
+                icon = Icons.Outlined.Delete,
+                onClick = { onBulkDelete(selection) }
+            ))
+        }
+    } else buildList {
         add(ContextMenuItemData(
             label = "New File",
             icon = Icons.AutoMirrored.Outlined.NoteAdd,
@@ -467,22 +590,63 @@ fun FileTreeItem(
         add(ContextMenuItemData(
             label = "Rename...",
             icon = Icons.Outlined.DriveFileRenameOutline,
-            onClick = { onRename(itemPath, node.name) }
+            // Rename targets the innermost dir of a compacted chain (itemPath is
+            // endNode.path), so prefill with that dir's name, not the chain top's.
+            onClick = { onRename(itemPath, endNode.name) }
         ))
         add(ContextMenuItemData(
             label = "Delete",
             icon = Icons.Outlined.Delete,
-            onClick = { onDelete(itemPath, itemName) }
+            // Delete the top of the compacted chain: the row displays the whole
+            // chain ("a/b/c"), so deleting must remove all of it — deleting the
+            // end node would only remove the innermost nested folder.
+            onClick = { onDelete(node.path, itemName) }
         ))
     }
+
+    // Read the live keyboard modifier state at click time to distinguish
+    // plain click / Cmd(Ctrl)+click / Shift+click.
+    val windowInfo = LocalWindowInfo.current
 
     val baseModifier = Modifier
         .fillMaxWidth()
         .height(26.dp)
+        .background(if (isSelected) BossAccentBlue.copy(alpha = 0.25f) else Color.Transparent)
+        // Right-clicking a row OUTSIDE the current selection collapses the
+        // selection to that row (standard file-manager behavior), so the
+        // highlight always matches what the context menu will act on.
+        // Observed on the Initial pass without consuming, so the host's
+        // context-menu gesture detection is unaffected.
+        // TIMING ASSUMPTION: menu items are baked into the modifier at
+        // composition; a row outside the selection already carries the
+        // single-item menu, so even if the menu opens before recomposition
+        // the shown items match the clicked row. Only the highlight depends
+        // on the state update landing first.
+        .pointerInput(node.path, isSelected) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    if (event.type == PointerEventType.Press &&
+                        event.buttons.isSecondaryPressed &&
+                        !isSelected
+                    ) {
+                        onSelectOnly(node.path)
+                    }
+                }
+            }
+        }
         .combinedClickable(
             onClick = {
-                if (node.isDirectory && showExpandIndicator) {
-                    onToggleExpanded(node.path)
+                val modifiers = windowInfo.keyboardModifiers
+                when {
+                    modifiers.isMetaPressed || modifiers.isCtrlPressed -> onToggleSelect(node.path)
+                    modifiers.isShiftPressed -> onRangeSelect(node.path)
+                    else -> {
+                        onSelectOnly(node.path)
+                        if (node.isDirectory && showExpandIndicator) {
+                            onToggleExpanded(node.path)
+                        }
+                    }
                 }
             },
             onDoubleClick = {
@@ -537,11 +701,14 @@ fun FileTreeItem(
 
             Spacer(modifier = Modifier.width(6.dp))
 
-            // File/folder name (compact display for directories)
+            // File/folder name (compact display for directories); names that
+            // don't fit end in an ellipsis instead of clipping at the edge
             Text(
                 text = if (node.isDirectory) compactDisplayName else node.name,
                 fontSize = 13.sp,
-                color = BossTextColor
+                color = BossTextColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
 
@@ -594,7 +761,11 @@ fun FileTreeItem(
                             node = child,
                             level = level + 1,
                             expandedPaths = expandedPaths,
+                            selectedPaths = selectedPaths,
                             onToggleExpanded = onToggleExpanded,
+                            onSelectOnly = onSelectOnly,
+                            onToggleSelect = onToggleSelect,
+                            onRangeSelect = onRangeSelect,
                             onFileDoubleClick = onFileDoubleClick,
                             onCreateFile = onCreateFile,
                             onCreateFolder = onCreateFolder,
@@ -607,6 +778,9 @@ fun FileTreeItem(
                             onOpenInEditor = onOpenInEditor,
                             onOpenInBrowser = onOpenInBrowser,
                             onOpenWithDefaultApp = onOpenWithDefaultApp,
+                            onBulkCopyPaths = onBulkCopyPaths,
+                            onBulkCopyRelativePaths = onBulkCopyRelativePaths,
+                            onBulkDelete = onBulkDelete,
                             contextMenuProvider = contextMenuProvider
                         )
                     }
@@ -862,6 +1036,117 @@ private fun DeleteConfirmationDialog(
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = BossDarkTextSecondary
+                        )
+                    ) {
+                        Text("Cancel", fontSize = 13.sp)
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Button(
+                        onClick = onConfirm,
+                        colors = ButtonDefaults.buttonColors(
+                            backgroundColor = BossErrorRed,
+                            contentColor = BossThemeColors.TextPrimary
+                        ),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.height(32.dp)
+                    ) {
+                        Text("Delete", fontSize = 13.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Bulk delete confirmation dialog.
+ */
+@Composable
+private fun BulkDeleteConfirmationDialog(
+    itemNames: List<String>,
+    errorMessage: String?,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = BossHeaderColor,
+            elevation = 8.dp,
+            modifier = Modifier.width(320.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Delete,
+                        contentDescription = null,
+                        tint = BossErrorRed,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Delete ${itemNames.size} Items",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = BossThemeColors.TextPrimary
+                    )
+                }
+
+                Text(
+                    text = "Are you sure you want to delete these ${itemNames.size} items?",
+                    fontSize = 13.sp,
+                    color = BossTextColor,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                val previewNames = itemNames.take(5)
+                previewNames.forEach { name ->
+                    Text(
+                        text = "• $name",
+                        fontSize = 12.sp,
+                        color = BossDarkTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (itemNames.size > previewNames.size) {
+                    Text(
+                        text = "…and ${itemNames.size - previewNames.size} more",
+                        fontSize = 12.sp,
+                        color = BossDarkTextSecondary,
+                        fontStyle = FontStyle.Italic
+                    )
+                }
+
+                Text(
+                    text = "Folders will be deleted with all their contents.",
+                    fontSize = 12.sp,
+                    color = BossDarkTextSecondary,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 12.dp)
+                )
+
+                if (errorMessage != null) {
+                    Text(
+                        text = errorMessage,
+                        fontSize = 11.sp,
+                        color = BossErrorRed,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

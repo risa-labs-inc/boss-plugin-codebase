@@ -1,7 +1,6 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
 import ai.rever.boss.plugin.api.FileNodeData
-import ai.rever.boss.plugin.api.FileSystemDataProvider
 import ai.rever.boss.plugin.api.NodeLoadingStateData
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -13,8 +12,7 @@ import kotlin.time.Clock
  */
 class FileIndexCache(
     private val maxSize: Int = 1000,
-    private val maxDepthInitial: Int = 2,
-    private val fileSystemProvider: FileSystemDataProvider?
+    private val maxDepthInitial: Int = 2
 ) {
     private val cache = mutableMapOf<String, CachedNode>()
     private val accessOrder = mutableListOf<String>()
@@ -24,46 +22,58 @@ class FileIndexCache(
         val node: FileNode,
         var lastAccessed: Long = Clock.System.now().epochSeconds,
         var isFullyLoaded: Boolean = false,
-        var loadDepth: Int = 0
+        var loadDepth: Int = 0,
+        /** The hidden-files setting this entry was scanned with. */
+        val showHidden: Boolean = false
     )
 
-    suspend fun getNode(path: String, forceReload: Boolean = false): FileNode? = mutex.withLock {
+    suspend fun getNode(path: String, showHidden: Boolean, forceReload: Boolean = false): FileNode? = mutex.withLock {
         if (!forceReload) {
             cache[path]?.let { cached ->
-                // Update access order
-                accessOrder.remove(path)
-                accessOrder.add(0, path)
-                cached.lastAccessed = Clock.System.now().epochSeconds
-                return cached.node
+                // An entry scanned with a different hidden-files setting is
+                // stale — fall through and rescan rather than relying on
+                // callers to clear the cache when the setting flips.
+                if (cached.showHidden == showHidden) {
+                    // Update access order
+                    accessOrder.remove(path)
+                    accessOrder.add(0, path)
+                    cached.lastAccessed = Clock.System.now().epochSeconds
+                    return cached.node
+                }
             }
         }
 
         // Load node from file system
-        val nodeData = fileSystemProvider?.scanDirectory(path)
+        val nodeData = LocalFileScanner.scanDirectory(path, showHidden)
         val node = nodeData?.let { convertToFileNode(it) }
 
         node?.let {
-            addToCache(path, it, maxDepthInitial)
+            addToCache(path, it, maxDepthInitial, showHidden)
         }
 
         return node
     }
 
-    private fun addToCache(path: String, node: FileNode, depth: Int) {
+    private fun addToCache(path: String, node: FileNode, depth: Int, showHidden: Boolean) {
         // Evict old entries if needed
         while (cache.size >= maxSize && accessOrder.isNotEmpty()) {
             val oldestPath = accessOrder.removeLast()
             cache.remove(oldestPath)
         }
 
-        cache[path] = CachedNode(node, loadDepth = depth)
+        cache[path] = CachedNode(node, loadDepth = depth, showHidden = showHidden)
+        // Overwrites must not leave a duplicate entry in the LRU order
+        accessOrder.remove(path)
         accessOrder.add(0, path)
 
-        // Also cache child directories for quick access
+        // Also cache child directories for quick access. Already-cached child
+        // paths are left as-is even if their showHidden flag differs — stale
+        // entries linger until re-accessed, where getNode's mismatch check
+        // rescans them (invalidation-on-read, by design).
         if (node.isDirectory && depth > 0) {
             node.children.forEach { child ->
                 if (child.isDirectory && !cache.containsKey(child.path)) {
-                    addToCache(child.path, child, depth - 1)
+                    addToCache(child.path, child, depth - 1, showHidden)
                 }
             }
         }

@@ -39,13 +39,20 @@ class CodebaseViewModel(
     private val _expandedPaths = MutableStateFlow(setOf<String>())
     val expandedPaths: StateFlow<Set<String>> = _expandedPaths.asStateFlow()
 
-    private val _selectedPath = MutableStateFlow<String?>(null)
-    val selectedPath: StateFlow<String?> = _selectedPath.asStateFlow()
+    private val _selectedPaths = MutableStateFlow<Set<String>>(emptySet())
+    val selectedPaths: StateFlow<Set<String>> = _selectedPaths.asStateFlow()
+
+    // Anchor row for shift-click range selection (the last plainly/cmd-selected row).
+    // Plain var: only ever mutated from coroutines on [scope]'s (Main-confined)
+    // dispatcher — unlike the StateFlows it is NOT thread-safe on its own.
+    private var selectionAnchor: String? = null
+
+    private val _showHidden = MutableStateFlow(false)
+    val showHidden: StateFlow<Boolean> = _showHidden.asStateFlow()
 
     private val fileCache = FileIndexCache(
         maxSize = 1000,
-        maxDepthInitial = 2,
-        fileSystemProvider = fileSystemDataProvider
+        maxDepthInitial = 2
     )
 
     // Mutex to prevent race conditions during tree updates
@@ -77,7 +84,52 @@ class CodebaseViewModel(
         }
 
         // Callers may be on the Main dispatcher (e.g. LaunchedEffect) — keep the scan off it.
-        _fileTree.value = withContext(Dispatchers.IO) { fileCache.getNode(rootPath) }
+        _fileTree.value = withContext(Dispatchers.IO) { fileCache.getNode(rootPath, _showHidden.value) }
+    }
+
+    /**
+     * Toggle visibility of hidden (dot) files and folders, then rebuild the
+     * tree. Previously expanded directories are re-loaded so they don't sit
+     * on a loading spinner after the rebuild.
+     */
+    fun setShowHidden(show: Boolean) {
+        if (_showHidden.value == show) return
+        _showHidden.value = show
+
+        scope.launch {
+            val rootPath = getProjectPath()
+            if (rootPath.isNullOrEmpty()) return@launch
+            // No clearCache() needed: FileIndexCache entries record their
+            // showHidden setting and a mismatched hit rescans.
+            loadFileTree(rootPath)
+            // Ancestors first (shorter paths) so children exist in the tree
+            // by the time their own reload runs.
+            _expandedPaths.value.sortedBy { it.length }.forEach { path ->
+                loadNodeChildren(path)
+            }
+            // Drop selected paths that are no longer in the rebuilt tree
+            // (e.g. a selected dot-file after hiding hidden files) so bulk
+            // operations can't act on invisible items.
+            pruneSelectionToTree()
+        }
+    }
+
+    /**
+     * Keep only selected paths that still resolve to a node in the tree.
+     */
+    private fun pruneSelectionToTree() {
+        val tree = _fileTree.value
+        if (tree == null) {
+            clearSelection()
+            return
+        }
+        val remaining = _selectedPaths.value
+            .filter { FileTreeUtils.findNodeByPath(tree, it) != null }
+            .toSet()
+        if (remaining.size != _selectedPaths.value.size) {
+            _selectedPaths.value = remaining
+            if (selectionAnchor !in remaining) selectionAnchor = remaining.firstOrNull()
+        }
     }
 
     /**
@@ -134,7 +186,7 @@ class CodebaseViewModel(
         // so no per-child directoryHasChildren round-trips are needed here.
         val scannedNode = try {
             withContext(Dispatchers.IO) {
-                fileSystemDataProvider?.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0)
+                LocalFileScanner.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
             }
         } catch (e: Exception) {
             null
@@ -205,7 +257,7 @@ class CodebaseViewModel(
 
         val scannedNode = try {
             withContext(Dispatchers.IO) {
-                fileSystemDataProvider?.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0)
+                LocalFileScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
             }
         } catch (e: Exception) {
             null
@@ -260,6 +312,7 @@ class CodebaseViewModel(
     fun clearTree() {
         _fileTree.value = null
         _expandedPaths.value = emptySet()
+        clearSelection()
     }
 
     /**
@@ -303,10 +356,66 @@ class CodebaseViewModel(
     }
 
     /**
-     * Select a file or directory.
+     * Replace the selection with a single file or directory.
      */
-    fun select(path: String) {
-        _selectedPath.value = path
+    fun selectOnly(path: String) {
+        _selectedPaths.value = setOf(path)
+        selectionAnchor = path
+    }
+
+    /**
+     * Toggle one item in the selection (Cmd/Ctrl+click).
+     */
+    fun toggleSelection(path: String) {
+        val current = _selectedPaths.value.toMutableSet()
+        if (path in current) {
+            current.remove(path)
+            if (selectionAnchor == path) selectionAnchor = current.firstOrNull()
+        } else {
+            current.add(path)
+            selectionAnchor = path
+        }
+        _selectedPaths.value = current
+    }
+
+    /**
+     * Select the contiguous range of visible rows between the anchor and
+     * [path] (Shift+click). Falls back to single selection without an anchor.
+     */
+    fun selectRangeTo(path: String) {
+        val anchor = selectionAnchor ?: run {
+            selectOnly(path)
+            return
+        }
+        val rows = visibleRowPaths()
+        val anchorIndex = rows.indexOf(anchor)
+        val targetIndex = rows.indexOf(path)
+        if (anchorIndex == -1 || targetIndex == -1) {
+            selectOnly(path)
+            return
+        }
+        val range = rows.subList(minOf(anchorIndex, targetIndex), maxOf(anchorIndex, targetIndex) + 1)
+        _selectedPaths.value = range.toSet()
+        // The anchor stays put so further shift-clicks re-pivot around it.
+    }
+
+    fun clearSelection() {
+        _selectedPaths.value = emptySet()
+        selectionAnchor = null
+    }
+
+    private fun visibleRowPaths(): List<String> =
+        FileTreeUtils.visibleRowPaths(_fileTree.value, _expandedPaths.value)
+
+    /**
+     * Order a set of selected paths in visible-row order; paths no longer
+     * visible (collapsed ancestors) are appended at the end.
+     */
+    private fun orderSelected(paths: List<String>): List<String> {
+        val set = paths.toSet()
+        val visible = visibleRowPaths().filter { it in set }
+        val visibleSet = visible.toSet()
+        return visible + paths.filterNot { it in visibleSet }
     }
 
     /**
@@ -402,7 +511,7 @@ class CodebaseViewModel(
             // Reload children on IO dispatcher
             val loadedChildren = try {
                 withContext(Dispatchers.IO) {
-                    val scannedNode = fileSystemDataProvider?.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0)
+                    val scannedNode = LocalFileScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
                     scannedNode?.children?.map { convertToFileNode(it) }
                 }
             } catch (e: Exception) {
@@ -457,6 +566,7 @@ class CodebaseViewModel(
                 ?: Result.failure(IllegalStateException("File system provider not available"))
             onResult(result)
             if (result.isSuccess) {
+                pruneSelection(listOf(path))
                 // Refresh parent directory
                 val parentPath = path.substringBeforeLast('/')
                 if (parentPath.isNotEmpty()) {
@@ -464,6 +574,62 @@ class CodebaseViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * Delete multiple files/folders (bulk operation).
+     *
+     * Paths nested under another path in the batch are skipped — deleting the
+     * ancestor removes them. Failures don't stop the batch; the result lists
+     * every item that failed.
+     */
+    fun deleteItems(paths: List<String>, onResult: (Result<Unit>) -> Unit) {
+        scope.launch {
+            val provider = fileSystemDataProvider
+            if (provider == null) {
+                onResult(Result.failure(IllegalStateException("File system provider not available")))
+                return@launch
+            }
+
+            val roots = FileTreeUtils.filterNestedPaths(paths)
+            val deleted = mutableListOf<String>()
+            val failedNames = mutableListOf<String>()
+            // Deleting many items (recursive folder removals) is slow IO — keep
+            // the whole loop off the scope's dispatcher.
+            withContext(Dispatchers.IO) {
+                for (path in roots) {
+                    if (provider.delete(path).isSuccess) {
+                        deleted.add(path)
+                    } else {
+                        failedNames.add(path.substringAfterLast('/'))
+                    }
+                }
+            }
+
+            if (deleted.isNotEmpty()) {
+                pruneSelection(deleted)
+                deleted.map { it.substringBeforeLast('/') }
+                    .distinct()
+                    .filter { it.isNotEmpty() }
+                    .forEach { refreshNode(it) }
+            }
+
+            onResult(
+                if (failedNames.isEmpty()) Result.success(Unit)
+                else Result.failure(Exception("Failed to delete: ${failedNames.joinToString(", ")}"))
+            )
+        }
+    }
+
+    /**
+     * Drop deleted paths (and anything under them) from the selection.
+     */
+    private fun pruneSelection(deletedPaths: List<String>) {
+        val remaining = _selectedPaths.value.filterNot { selected ->
+            deletedPaths.any { selected == it || selected.startsWith("$it/") }
+        }.toSet()
+        _selectedPaths.value = remaining
+        if (selectionAnchor !in remaining) selectionAnchor = remaining.firstOrNull()
     }
 
     /**
@@ -530,6 +696,72 @@ class CodebaseViewModel(
             path
         }
         fileSystemDataProvider?.copyToClipboard(relativePath)
+    }
+
+    /**
+     * Copy multiple absolute paths to the clipboard, newline-separated,
+     * in visible-row order.
+     */
+    fun copyPaths(paths: List<String>) {
+        val index = nodeIndex()
+        val resolved = orderSelected(paths).map { toCopyPath(it, index) }
+        fileSystemDataProvider?.copyToClipboard(resolved.joinToString("\n"))
+    }
+
+    /**
+     * Copy multiple project-relative paths to the clipboard, newline-separated,
+     * in visible-row order.
+     */
+    fun copyRelativePaths(paths: List<String>) {
+        val projectPath = getProjectPath() ?: ""
+        val index = nodeIndex()
+        val relativePaths = orderSelected(paths).map { toCopyPath(it, index) }.map { path ->
+            if (projectPath.isNotEmpty() && path.startsWith(projectPath)) {
+                path.removePrefix(projectPath).removePrefix("/")
+            } else {
+                path
+            }
+        }
+        fileSystemDataProvider?.copyToClipboard(relativePaths.joinToString("\n"))
+    }
+
+    /**
+     * Display names for the bulk-delete dialog, in visible-row order.
+     * Compacted directory rows show their full chain name ("a/b/c"),
+     * matching the single-item delete dialog.
+     */
+    fun displayNamesFor(paths: List<String>): List<String> {
+        val index = nodeIndex()
+        return orderSelected(paths).map { path ->
+            val node = index[path]
+            if (node?.isDirectory == true) node.getCompactDisplayName() else path.substringAfterLast('/')
+        }
+    }
+
+    /**
+     * One tree walk producing a path→node lookup, so bulk operations resolve
+     * each selected item in O(1) instead of a findNodeByPath per item.
+     */
+    private fun nodeIndex(): Map<String, FileNode> {
+        val root = _fileTree.value ?: return emptyMap()
+        val index = mutableMapOf<String, FileNode>()
+        fun walk(node: FileNode) {
+            index[node.path] = node
+            node.children.forEach { walk(it) }
+        }
+        walk(root)
+        return index
+    }
+
+    /**
+     * Resolve a selected row path (a compact-chain top) to the path the
+     * single-item Copy Path uses: the innermost directory of the chain.
+     * Keeps single and bulk copy in agreement on compacted rows; delete
+     * intentionally differs (it removes the whole displayed chain).
+     */
+    private fun toCopyPath(path: String, index: Map<String, FileNode>): String {
+        val node = index[path] ?: return path
+        return if (node.isDirectory) node.getCompactEndNode().path else node.path
     }
 
     /**
