@@ -428,7 +428,8 @@ class CodebaseViewModel(
     private fun orderSelected(paths: List<String>): List<String> {
         val set = paths.toSet()
         val visible = visibleRowPaths().filter { it in set }
-        return visible + paths.filterNot { it in visible.toSet() }
+        val visibleSet = visible.toSet()
+        return visible + paths.filterNot { it in visibleSet }
     }
 
     /**
@@ -716,7 +717,8 @@ class CodebaseViewModel(
      * in visible-row order.
      */
     fun copyPaths(paths: List<String>) {
-        fileSystemDataProvider?.copyToClipboard(orderSelected(paths).joinToString("\n"))
+        val resolved = orderSelected(paths).map { toCopyPath(it) }
+        fileSystemDataProvider?.copyToClipboard(resolved.joinToString("\n"))
     }
 
     /**
@@ -725,7 +727,7 @@ class CodebaseViewModel(
      */
     fun copyRelativePaths(paths: List<String>) {
         val projectPath = getProjectPath() ?: ""
-        val relativePaths = orderSelected(paths).map { path ->
+        val relativePaths = orderSelected(paths).map { toCopyPath(it) }.map { path ->
             if (projectPath.isNotEmpty() && path.startsWith(projectPath)) {
                 path.removePrefix(projectPath).removePrefix("/")
             } else {
@@ -733,6 +735,18 @@ class CodebaseViewModel(
             }
         }
         fileSystemDataProvider?.copyToClipboard(relativePaths.joinToString("\n"))
+    }
+
+    /**
+     * Resolve a selected row path (a compact-chain top) to the path the
+     * single-item Copy Path uses: the innermost directory of the chain.
+     * Keeps single and bulk copy in agreement on compacted rows; delete
+     * intentionally differs (it removes the whole displayed chain).
+     */
+    private fun toCopyPath(path: String): String {
+        val tree = _fileTree.value ?: return path
+        val node = FileTreeUtils.findNodeByPath(tree, path) ?: return path
+        return if (node.isDirectory) node.getCompactEndNode().path else node.path
     }
 
     /**

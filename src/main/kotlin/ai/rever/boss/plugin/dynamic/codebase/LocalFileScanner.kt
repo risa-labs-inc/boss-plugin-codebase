@@ -21,6 +21,11 @@ import java.nio.file.Paths
  * FileSystemDataProvider ever gains a showHidden opt-in. Note writes,
  * deletes, renames, and opens still go through the host provider; only
  * read-side tree scans happen here.
+ *
+ * ACCESS CONTROL: verified (2026-07) that the host's FileSystemDataProviderImpl
+ * is a plain Dispatchers.IO wrapper over the same unscoped platform scanner —
+ * no project-root scoping or RBAC on reads — so scanning directly does not
+ * bypass a security boundary. Revisit if the provider ever adds read scoping.
  */
 object LocalFileScanner {
 
