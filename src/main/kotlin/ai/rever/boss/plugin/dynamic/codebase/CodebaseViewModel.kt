@@ -189,10 +189,9 @@ class CodebaseViewModel(
 
         // Load children. The scan already fills hasChildren for edge directories,
         // so no per-child directoryHasChildren round-trips are needed here.
+        // TreeScanner dispatches to IO internally
         val scannedNode = try {
-            withContext(Dispatchers.IO) {
-                treeScanner.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
-            }
+            treeScanner.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
         } catch (e: Exception) {
             null
         }
@@ -260,10 +259,9 @@ class CodebaseViewModel(
         if (node?.isDirectory != true) return
         if (node.isLoaded) return
 
+        // TreeScanner dispatches to IO internally
         val scannedNode = try {
-            withContext(Dispatchers.IO) {
-                treeScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
-            }
+            treeScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
         } catch (e: Exception) {
             null
         }
@@ -334,7 +332,7 @@ class CodebaseViewModel(
      * Force-open a file in the browser tab (for images, PDFs, etc.).
      */
     fun openFileInBrowser(path: String) {
-        val fileName = PathUtils.name(path)
+        val fileName = PathUtils.name(path).ifEmpty { path }
         splitViewOperations?.openFileInBrowser(path, fileName)
     }
 
@@ -342,7 +340,7 @@ class CodebaseViewModel(
      * Force-open a file in the code editor (overriding smart routing).
      */
     fun openFileInEditor(path: String) {
-        val fileName = PathUtils.name(path)
+        val fileName = PathUtils.name(path).ifEmpty { path }
         splitViewOperations?.openFileInEditor(path, fileName)
     }
 
@@ -513,12 +511,10 @@ class CodebaseViewModel(
                 treeUpdateMutex.unlock()
             }
 
-            // Reload children on IO dispatcher
+            // Reload children (TreeScanner dispatches to IO internally)
             val loadedChildren = try {
-                withContext(Dispatchers.IO) {
-                    val scannedNode = treeScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
-                    scannedNode?.children?.map { convertToFileNode(it) }
-                }
+                treeScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
+                    ?.children?.map { convertToFileNode(it) }
             } catch (e: Exception) {
                 null
             }

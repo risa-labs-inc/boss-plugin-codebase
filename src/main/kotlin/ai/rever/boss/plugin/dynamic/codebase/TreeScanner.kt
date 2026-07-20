@@ -148,6 +148,11 @@ internal class TreeScanner(private val provider: FileSystemDataProvider?) {
         }
 
     private companion object {
+        // Unsynchronized by design: worst case two concurrent constructions
+        // each log once. Per-CLASSLOADER, not truly per-process — every plugin
+        // (re)load gets a fresh classloader, so a hot-reloaded instance logs
+        // its routing decision again, which is exactly what you want when
+        // diagnosing a reload.
         @Volatile
         private var loggedRouting = false
     }

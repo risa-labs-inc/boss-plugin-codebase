@@ -8,8 +8,6 @@ import ai.rever.boss.plugin.api.McpToolProvider
 import ai.rever.boss.plugin.api.McpToolResult
 import ai.rever.boss.plugin.api.ProjectData
 import ai.rever.boss.plugin.api.ProjectDataProvider
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /**
  * MCP tools contributed by the Codebase plugin: browse the project file tree,
@@ -39,10 +37,9 @@ internal class CodebaseMcpToolProvider(
                 val depth = (args.int("depth") ?: 2).coerceIn(1, 6)
                 val includeHidden = args.boolean("include_hidden") ?: false
                 // Same scanner facade as the panel tree, so MCP and UI agree
-                // on what "hidden" means.
-                val root = withContext(Dispatchers.IO) {
-                    scanner.scanDirectoryWithDepth(path, depth, 0, showHidden = includeHidden)
-                } ?: return@McpToolHandler McpToolResult("Could not scan: $path", isError = true)
+                // on what "hidden" means; it dispatches to IO internally.
+                val root = scanner.scanDirectoryWithDepth(path, depth, 0, showHidden = includeHidden)
+                    ?: return@McpToolHandler McpToolResult("Could not scan: $path", isError = true)
                 val sb = StringBuilder()
                 renderTree(root, "", sb)
                 McpToolResult(sb.toString().trimEnd())
