@@ -43,6 +43,8 @@ class CodebaseViewModel(
     val selectedPaths: StateFlow<Set<String>> = _selectedPaths.asStateFlow()
 
     // Anchor row for shift-click range selection (the last plainly/cmd-selected row).
+    // Plain var: only ever mutated from coroutines on [scope]'s (Main-confined)
+    // dispatcher — unlike the StateFlows it is NOT thread-safe on its own.
     private var selectionAnchor: String? = null
 
     private val _showHidden = MutableStateFlow(false)
@@ -401,25 +403,8 @@ class CodebaseViewModel(
         selectionAnchor = null
     }
 
-    /**
-     * Flatten the tree into the row order the UI renders: children of a
-     * directory are visible when its row path is expanded, and compacted
-     * chains ("a/b/c") contribute the end node's children under the chain
-     * top's path — mirroring FileTreeItem.
-     */
-    private fun visibleRowPaths(): List<String> {
-        val root = _fileTree.value ?: return emptyList()
-        val expanded = _expandedPaths.value
-        val result = mutableListOf<String>()
-        fun walk(node: FileNode) {
-            result.add(node.path)
-            if (node.isDirectory && expanded.contains(node.path)) {
-                node.getCompactEndNode().children.forEach { walk(it) }
-            }
-        }
-        root.children.forEach { walk(it) }
-        return result
-    }
+    private fun visibleRowPaths(): List<String> =
+        FileTreeUtils.visibleRowPaths(_fileTree.value, _expandedPaths.value)
 
     /**
      * Order a set of selected paths in visible-row order; paths no longer
@@ -605,7 +590,7 @@ class CodebaseViewModel(
                 return@launch
             }
 
-            val roots = paths.filter { p -> paths.none { other -> other != p && p.startsWith("$other/") } }
+            val roots = FileTreeUtils.filterNestedPaths(paths)
             val deleted = mutableListOf<String>()
             val failedNames = mutableListOf<String>()
             // Deleting many items (recursive folder removals) is slow IO — keep
@@ -735,6 +720,19 @@ class CodebaseViewModel(
             }
         }
         fileSystemDataProvider?.copyToClipboard(relativePaths.joinToString("\n"))
+    }
+
+    /**
+     * Display names for the bulk-delete dialog, in visible-row order.
+     * Compacted directory rows show their full chain name ("a/b/c"),
+     * matching the single-item delete dialog.
+     */
+    fun displayNamesFor(paths: List<String>): List<String> {
+        val tree = _fileTree.value
+        return orderSelected(paths).map { path ->
+            val node = tree?.let { FileTreeUtils.findNodeByPath(it, path) }
+            if (node?.isDirectory == true) node.getCompactDisplayName() else path.substringAfterLast('/')
+        }
     }
 
     /**

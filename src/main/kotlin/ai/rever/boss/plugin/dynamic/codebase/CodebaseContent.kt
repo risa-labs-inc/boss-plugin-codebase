@@ -14,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -37,9 +38,13 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isCtrlPressed
 import androidx.compose.ui.input.pointer.isMetaPressed
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -251,16 +256,16 @@ fun CodebaseContent(
 
             Divider(color = BossDarkBorder)
 
-            // File tree (clicking empty space below the rows clears the selection)
+            // File tree (tapping empty space below the rows clears the selection;
+            // row clicks are consumed by the rows, cancelling this detector)
             LazyColumn(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(top = 4.dp)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { viewModel.clearSelection() }
+                    .pointerInput(Unit) {
+                        detectTapGestures { viewModel.clearSelection() }
+                    }
             ) {
                 tree?.let { rootNode ->
                     items(rootNode.children, key = { it.path }) { node ->
@@ -395,7 +400,7 @@ fun CodebaseContent(
     // Bulk Delete Confirmation Dialog
     showBulkDeleteDialog?.let { paths ->
         BulkDeleteConfirmationDialog(
-            itemNames = paths.map { it.substringAfterLast('/') },
+            itemNames = viewModel.displayNamesFor(paths),
             errorMessage = errorMessage,
             onDismiss = {
                 showBulkDeleteDialog = null
@@ -607,6 +612,24 @@ fun FileTreeItem(
         .fillMaxWidth()
         .height(26.dp)
         .background(if (isSelected) BossAccentBlue.copy(alpha = 0.25f) else Color.Transparent)
+        // Right-clicking a row OUTSIDE the current selection collapses the
+        // selection to that row (standard file-manager behavior), so the
+        // highlight always matches what the context menu will act on.
+        // Observed on the Initial pass without consuming, so the host's
+        // context-menu gesture detection is unaffected.
+        .pointerInput(node.path, isSelected) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    if (event.type == PointerEventType.Press &&
+                        event.buttons.isSecondaryPressed &&
+                        !isSelected
+                    ) {
+                        onSelectOnly(node.path)
+                    }
+                }
+            }
+        }
         .combinedClickable(
             onClick = {
                 val modifiers = windowInfo.keyboardModifiers

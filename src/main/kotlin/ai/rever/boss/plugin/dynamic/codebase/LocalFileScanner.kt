@@ -26,6 +26,13 @@ import java.nio.file.Paths
  * is a plain Dispatchers.IO wrapper over the same unscoped platform scanner —
  * no project-root scoping or RBAC on reads — so scanning directly does not
  * bypass a security boundary. Revisit if the provider ever adds read scoping.
+ * (The host does canonical-path validation on writes; those stay on the provider.)
+ *
+ * PATH SEPARATORS: emits File.absolutePath verbatim, exactly like the host
+ * scanner (neither normalizes separators), so node keys stay comparable with
+ * host-sourced paths (e.g. getProjectPath()) on every platform. The plugin's
+ * '/'-based string logic predates this file and would need a coordinated
+ * plugin+host pass to be Windows-correct; do not "fix" it here unilaterally.
  */
 object LocalFileScanner {
 

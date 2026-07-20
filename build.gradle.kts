@@ -35,9 +35,12 @@ dependencies {
     if (useLocalDependencies) {
         // Local development: use boss-plugin-api JAR from sibling repo
         compileOnly(files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.51.jar"))
+        // compileOnly isn't visible to the test compilation/runtime
+        testImplementation(files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.51.jar"))
     } else {
         // CI: use downloaded JAR
         compileOnly(files("build/downloaded-deps/boss-plugin-api.jar"))
+        testImplementation(files("build/downloaded-deps/boss-plugin-api.jar"))
     }
 
     // Compose dependencies
@@ -57,6 +60,12 @@ dependencies {
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+
+    testImplementation(kotlin("test"))
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 // Task to build plugin JAR with compiled classes only
