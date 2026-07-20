@@ -27,6 +27,18 @@ internal class TreeScanner(private val provider: FileSystemDataProvider?) {
     /** True when the host honors the showHidden flag (gates the UI toggle). */
     val supportsHiddenEntries: Boolean = provider?.supportsHiddenEntries == true
 
+    init {
+        // One diagnostic line per plugin load when a host degrades to legacy
+        // scans — this path is otherwise silent apart from the MCP note.
+        if (provider != null && !supportsHiddenEntries && !loggedDegradation) {
+            loggedDegradation = true
+            println(
+                "[codebase-plugin] TreeScanner: host binary predates showHidden support — " +
+                    "hidden-files toggle disabled, scans use legacy dot-filtering"
+            )
+        }
+    }
+
     // Both entry points dispatch to IO so callers never need to; the host
     // provider dispatches internally too, which nests as a cheap no-op.
 
@@ -44,4 +56,11 @@ internal class TreeScanner(private val provider: FileSystemDataProvider?) {
         withContext(Dispatchers.IO) {
             provider?.scanDirectoryWithDepth(path, maxDepth, startDepth, showHidden)
         }
+
+    private companion object {
+        // Per-classloader (i.e. per plugin load): a hot-reloaded instance
+        // re-logs, which is what you want when diagnosing a reload.
+        @Volatile
+        private var loggedDegradation = false
+    }
 }
