@@ -14,6 +14,13 @@ import java.nio.file.Paths
  * filesystem directly. Mirrors the host scanner's behavior (sorting,
  * hasChildren, loading states) with an additional [showHidden] flag;
  * `build`/`node_modules` stay skipped regardless, matching the host.
+ *
+ * DRIFT RISK: this duplicates BossConsole's DesktopFileScanner — if that
+ * changes (filter set, sorting, placeholder semantics), this copy silently
+ * diverges. TODO: delete this file and go back through the provider if
+ * FileSystemDataProvider ever gains a showHidden opt-in. Note writes,
+ * deletes, renames, and opens still go through the host provider; only
+ * read-side tree scans happen here.
  */
 object LocalFileScanner {
 

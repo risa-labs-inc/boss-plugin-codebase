@@ -104,6 +104,28 @@ class CodebaseViewModel(
             _expandedPaths.value.sortedBy { it.length }.forEach { path ->
                 loadNodeChildren(path)
             }
+            // Drop selected paths that are no longer in the rebuilt tree
+            // (e.g. a selected dot-file after hiding hidden files) so bulk
+            // operations can't act on invisible items.
+            pruneSelectionToTree()
+        }
+    }
+
+    /**
+     * Keep only selected paths that still resolve to a node in the tree.
+     */
+    private fun pruneSelectionToTree() {
+        val tree = _fileTree.value
+        if (tree == null) {
+            clearSelection()
+            return
+        }
+        val remaining = _selectedPaths.value
+            .filter { FileTreeUtils.findNodeByPath(tree, it) != null }
+            .toSet()
+        if (remaining.size != _selectedPaths.value.size) {
+            _selectedPaths.value = remaining
+            if (selectionAnchor !in remaining) selectionAnchor = remaining.firstOrNull()
         }
     }
 
@@ -585,11 +607,15 @@ class CodebaseViewModel(
             val roots = paths.filter { p -> paths.none { other -> other != p && p.startsWith("$other/") } }
             val deleted = mutableListOf<String>()
             val failedNames = mutableListOf<String>()
-            for (path in roots) {
-                if (provider.delete(path).isSuccess) {
-                    deleted.add(path)
-                } else {
-                    failedNames.add(path.substringAfterLast('/'))
+            // Deleting many items (recursive folder removals) is slow IO — keep
+            // the whole loop off the scope's dispatcher.
+            withContext(Dispatchers.IO) {
+                for (path in roots) {
+                    if (provider.delete(path).isSuccess) {
+                        deleted.add(path)
+                    } else {
+                        failedNames.add(path.substringAfterLast('/'))
+                    }
                 }
             }
 

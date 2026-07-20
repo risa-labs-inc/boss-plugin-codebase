@@ -7,7 +7,9 @@ import ai.rever.boss.plugin.api.SplitViewOperations
 import ai.rever.boss.plugin.ui.BossTheme
 import ai.rever.boss.plugin.ui.BossThemeColors
 import ai.rever.boss.plugin.ui.ContextMenuItemData
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -64,6 +66,7 @@ private val BossTextColor: Color get() = BossThemeColors.TextPrimary
  * Main content composable for the Codebase panel.
  * Ported from bundled plugin v8.16.22 with exact UI parity.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CodebaseContent(
     fileSystemDataProvider: FileSystemDataProvider?,
@@ -210,14 +213,39 @@ fun CodebaseContent(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
-                    Icon(
-                        imageVector = if (showHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                        contentDescription = if (showHidden) "Hide hidden files" else "Show hidden files",
-                        tint = if (showHidden) BossAccentBlue else BossDarkTextSecondary,
-                        modifier = Modifier
-                            .size(18.dp)
-                            .clickable { viewModel.setShowHidden(!showHidden) }
-                    )
+                    TooltipArea(
+                        tooltip = {
+                            Surface(
+                                color = BossHeaderColor,
+                                shape = RoundedCornerShape(4.dp),
+                                elevation = 4.dp,
+                                border = BorderStroke(1.dp, BossDarkBorder)
+                            ) {
+                                Text(
+                                    text = if (showHidden) {
+                                        "Hide hidden files (dotfiles)"
+                                    } else {
+                                        "Show hidden files (dotfiles) — build/ and node_modules/ stay hidden"
+                                    },
+                                    fontSize = 11.sp,
+                                    color = BossTextColor,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = if (showHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                            contentDescription = if (showHidden) "Hide hidden files (dotfiles)" else "Show hidden files (dotfiles)",
+                            tint = if (showHidden) BossAccentBlue else BossDarkTextSecondary,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { viewModel.setShowHidden(!showHidden) }
+                        )
+                    }
                 }
             }
 
