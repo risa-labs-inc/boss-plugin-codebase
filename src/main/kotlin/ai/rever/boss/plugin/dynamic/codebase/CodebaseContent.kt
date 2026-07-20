@@ -95,6 +95,13 @@ fun CodebaseContent(
         )
     }
 
+    // The ViewModel runs a file-watcher poll loop on the plugin-lifetime
+    // scope; stop it when this panel instance leaves the composition (or the
+    // ViewModel is recreated with new providers).
+    DisposableEffect(viewModel) {
+        onDispose { viewModel.dispose() }
+    }
+
     val projectPath = getProjectPath()
     val projectName = projectPath?.let { PathUtils.name(it) }?.ifEmpty { "Project" } ?: ""
     val hasProject = !projectPath.isNullOrEmpty()

@@ -94,6 +94,26 @@ object FileTreeUtils {
         paths.filter { p -> paths.none { other -> other != p && PathUtils.isNestedUnder(p, other, separator) } }
 
     /**
+     * Merges a fresh depth-1 rescan of a directory into its current children:
+     * the fresh list is the authority on what exists, but surviving children
+     * that already have a loaded subtree keep it (the watcher refreshes those
+     * separately when they're expanded). A path that changed kind
+     * (file <-> directory) always takes the fresh node.
+     */
+    fun mergeFreshChildren(current: List<FileNode>, fresh: List<FileNode>): List<FileNode> {
+        if (current.isEmpty()) return fresh
+        val currentByPath = current.associateBy { it.path }
+        return fresh.map { freshChild ->
+            val existing = currentByPath[freshChild.path]
+            if (existing != null && existing.isDirectory && freshChild.isDirectory && existing.isLoaded) {
+                existing
+            } else {
+                freshChild
+            }
+        }
+    }
+
+    /**
      * Creates a new tree with the node at targetPath updated using the provided transform.
      * This ensures immutable state updates for proper Compose recomposition.
      * Only nodes along the path are copied; other subtrees are shared.
