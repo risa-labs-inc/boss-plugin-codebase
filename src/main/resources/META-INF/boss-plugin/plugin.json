@@ -4,6 +4,7 @@
   "displayName": "Codebase (Dynamic)",
   "version": "1.0.10",
   "apiVersion": "1.0.20",
+  "minApiVersion": "1.0.66",
   "minBossVersion": "9.2.20",
   "mainClass": "ai.rever.boss.plugin.dynamic.codebase.CodebaseDynamicPlugin",
   "type": "panel",

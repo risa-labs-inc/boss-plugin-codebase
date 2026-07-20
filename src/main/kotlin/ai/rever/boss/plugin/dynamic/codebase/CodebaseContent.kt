@@ -218,7 +218,9 @@ fun CodebaseContent(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
-                    TooltipArea(
+                    // Hidden on host binaries that predate the showHidden
+                    // overloads — the flag would be silently ignored there.
+                    if (viewModel.supportsShowHidden) TooltipArea(
                         tooltip = {
                             Surface(
                                 color = BossHeaderColor,
