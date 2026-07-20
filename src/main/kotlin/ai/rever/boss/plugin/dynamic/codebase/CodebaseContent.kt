@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -205,6 +206,8 @@ fun CodebaseContent(
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = BossThemeColors.TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
                     Icon(
@@ -642,11 +645,14 @@ fun FileTreeItem(
 
             Spacer(modifier = Modifier.width(6.dp))
 
-            // File/folder name (compact display for directories)
+            // File/folder name (compact display for directories); names that
+            // don't fit end in an ellipsis instead of clipping at the edge
             Text(
                 text = if (node.isDirectory) compactDisplayName else node.name,
                 fontSize = 13.sp,
-                color = BossTextColor
+                color = BossTextColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
 
@@ -1058,7 +1064,7 @@ private fun BulkDeleteConfirmationDialog(
                         fontSize = 12.sp,
                         color = BossDarkTextSecondary,
                         maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 if (itemNames.size > previewNames.size) {
