@@ -40,8 +40,12 @@ import java.nio.file.attribute.BasicFileAttributes
  *   back to a name-only signature (plus the dir's own mtime) so one huge
  *   flat directory can't turn every tick into thousands of stat calls;
  *   only the collapsed-chevron nicety is lost for its subdirectories.
- * - Dot-entries are skipped when hidden files are off, so .git index churn
- *   from ordinary git commands doesn't trigger anything.
+ * - Entry visibility mirrors the host provider contract (BossConsole's
+ *   ProviderScanFilter): hidden means a NAME-based dot prefix on every
+ *   platform — deliberately not the Windows hidden attribute — and
+ *   build/node_modules are always skipped. So .git index churn from
+ *   ordinary git commands triggers nothing when hidden files are off, and
+ *   active builds/npm installs never even mark the root dirty.
  * - With no watched dirs (no project open) the loop suspends entirely.
  *
  * A changed dir that the host scan renders identically (e.g. an excluded
@@ -118,6 +122,15 @@ internal class FileWatcherService(
         internal const val MAX_FULL_STAT_ENTRIES = 1024
 
         /**
+         * Names the host provider NEVER returns regardless of showHidden —
+         * mirrors ProviderScanFilter.skippedDirectoryNames in BossConsole
+         * (host-internal, not in the plugin API, so kept in sync by hand).
+         * The tree never shows these, so their churn (active builds, npm
+         * installs) must not mark watched dirs dirty.
+         */
+        private val SKIPPED_ENTRY_NAMES = setOf("build", "node_modules")
+
+        /**
          * Order-independent 64-bit signature of a directory's DIRECT entries:
          * per entry the name and kind, plus mtime for subdirectory entries
          * (see class doc). Hash collisions are possible in principle; the
@@ -133,6 +146,7 @@ internal class FileWatcherService(
                     for (entry in stream) {
                         val name = entry.fileName?.toString() ?: continue
                         if (!showHidden && name.startsWith(".")) continue
+                        if (name in SKIPPED_ENTRY_NAMES) continue
                         entries.add(entry)
                     }
                 }

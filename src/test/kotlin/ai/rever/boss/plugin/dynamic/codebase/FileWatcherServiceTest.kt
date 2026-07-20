@@ -120,6 +120,23 @@ class FileWatcherServiceTest {
     }
 
     @Test
+    fun `build and node_modules entries never affect the signature`() {
+        Files.createFile(root.resolve("keep.txt"))
+        val visibleBefore = signature(showHidden = false)
+        val hiddenBefore = signature(showHidden = true)
+
+        // The host provider never returns these regardless of showHidden
+        // (ProviderScanFilter.skippedDirectoryNames) — neither their
+        // appearance nor churn inside them may mark the parent dirty.
+        val build = Files.createDirectory(root.resolve("build"))
+        Files.createDirectory(root.resolve("node_modules"))
+        Files.createFile(build.resolve("output.jar"))
+
+        assertEquals(visibleBefore, signature(showHidden = false))
+        assertEquals(hiddenBefore, signature(showHidden = true))
+    }
+
+    @Test
     fun `missing directory has a stable signature that changes when it appears`() {
         val ghost = root.resolve("not-yet").toString()
         val missing = FileWatcherService.directorySignature(ghost, showHidden = false)

@@ -145,6 +145,8 @@ class CodebaseViewModel(
     internal suspend fun refreshChangedDirectories(changedDirs: Set<String>) {
         var treeChanged = false
         // Ancestors first so a parent's merge lands before its child's rescan.
+        // Sorting by length is a safe ancestry proxy: an ancestor path is a
+        // strict prefix of its descendants, hence always shorter.
         for (path in changedDirs.sortedBy { it.length }) {
             val tree = _fileTree.value ?: return
             val node = FileTreeUtils.findNodeByPath(tree, path) ?: continue
@@ -159,14 +161,21 @@ class CodebaseViewModel(
 
             treeUpdateMutex.withLock {
                 val latest = _fileTree.value ?: return
-                if (FileTreeUtils.findNodeByPath(latest, path) == null) return@withLock
-                _fileTree.value = FileTreeUtils.updateNodeAtPath(latest, path) { existing ->
-                    val merged = FileTreeUtils.mergeFreshChildren(existing.children, freshChildren)
-                    existing.copy(
+                val existing = FileTreeUtils.findNodeByPath(latest, path) ?: return@withLock
+                val merged = FileTreeUtils.mergeFreshChildren(existing.children, freshChildren)
+                // Structural no-op (e.g. only an entry's mtime moved): skip
+                // the tree write AND the downstream side effects — this is
+                // what keeps busy build phases from repeatedly clearing the
+                // warm-start cache and re-pruning the selection. The
+                // not-loaded case still writes: it upgrades a node a parent
+                // merge just recreated to LOADED.
+                if (existing.isLoaded && merged == existing.children) return@withLock
+                _fileTree.value = FileTreeUtils.updateNodeAtPath(latest, path) { current ->
+                    current.copy(
                         children = merged,
                         hasChildren = merged.isNotEmpty(),
                         loadingState = NodeLoadingState.LOADED,
-                        loadDepth = maxOf(existing.loadDepth, 1)
+                        loadDepth = maxOf(current.loadDepth, 1)
                     )
                 }
                 treeChanged = true
