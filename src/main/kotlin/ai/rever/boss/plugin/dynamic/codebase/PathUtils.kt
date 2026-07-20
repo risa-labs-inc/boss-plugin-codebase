@@ -3,9 +3,9 @@ package ai.rever.boss.plugin.dynamic.codebase
 /**
  * Separator-aware path string helpers (issue #7).
  *
- * All paths in this plugin come from File.absolutePath (both the host
- * provider and LocalFileScanner emit it verbatim), so segments are joined
- * with the PLATFORM separator — backslash on Windows. These helpers replace
+ * All paths in this plugin come from File.absolutePath (the host provider
+ * emits it verbatim), so segments are joined with the PLATFORM separator —
+ * backslash on Windows. These helpers replace
  * the previously hardcoded '/' logic. They take the separator as a parameter
  * (defaulting to the platform's) so tests can exercise Windows-style paths
  * on any OS.

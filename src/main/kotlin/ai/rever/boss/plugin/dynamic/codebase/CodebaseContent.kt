@@ -218,38 +218,42 @@ fun CodebaseContent(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
-                    TooltipArea(
-                        tooltip = {
-                            Surface(
-                                color = BossHeaderColor,
-                                shape = RoundedCornerShape(4.dp),
-                                elevation = 4.dp,
-                                border = BorderStroke(1.dp, BossDarkBorder)
-                            ) {
-                                Text(
-                                    text = if (showHidden) {
-                                        "Hide hidden files (dotfiles)"
-                                    } else {
-                                        "Show hidden files (dotfiles) — build/ and node_modules/ stay hidden"
-                                    },
-                                    fontSize = 11.sp,
-                                    color = BossTextColor,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
+                    // Hidden on host binaries that predate the showHidden
+                    // overloads — the flag would be silently ignored there.
+                    if (viewModel.supportsShowHidden) {
+                        TooltipArea(
+                            tooltip = {
+                                Surface(
+                                    color = BossHeaderColor,
+                                    shape = RoundedCornerShape(4.dp),
+                                    elevation = 4.dp,
+                                    border = BorderStroke(1.dp, BossDarkBorder)
+                                ) {
+                                    Text(
+                                        text = if (showHidden) {
+                                            "Hide hidden files (dotfiles)"
+                                        } else {
+                                            "Show hidden files (dotfiles) — build/ and node_modules/ stay hidden"
+                                        },
+                                        fontSize = 11.sp,
+                                        color = BossTextColor,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
                             }
+                        ) {
+                            Icon(
+                                imageVector = if (showHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                                contentDescription = if (showHidden) "Hide hidden files (dotfiles)" else "Show hidden files (dotfiles)",
+                                tint = if (showHidden) BossAccentBlue else BossDarkTextSecondary,
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) { viewModel.setShowHidden(!showHidden) }
+                            )
                         }
-                    ) {
-                        Icon(
-                            imageVector = if (showHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                            contentDescription = if (showHidden) "Hide hidden files (dotfiles)" else "Show hidden files (dotfiles)",
-                            tint = if (showHidden) BossAccentBlue else BossDarkTextSecondary,
-                            modifier = Modifier
-                                .size(18.dp)
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null
-                                ) { viewModel.setShowHidden(!showHidden) }
-                        )
                     }
                 }
             }

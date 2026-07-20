@@ -50,9 +50,11 @@ class CodebaseViewModel(
     private val _showHidden = MutableStateFlow(false)
     val showHidden: StateFlow<Boolean> = _showHidden.asStateFlow()
 
-    // Scans go through the host provider when it honors showHidden,
-    // LocalFileScanner otherwise (issue #6).
+    // All scans go through the host provider (issue #6 retirement).
     private val treeScanner = TreeScanner(fileSystemDataProvider)
+
+    /** False on host binaries that predate the showHidden overloads — the UI hides the toggle. */
+    val supportsShowHidden: Boolean get() = treeScanner.supportsHiddenEntries
 
     private val fileCache = FileIndexCache(
         maxSize = 1000,
@@ -98,6 +100,7 @@ class CodebaseViewModel(
      * on a loading spinner after the rebuild.
      */
     fun setShowHidden(show: Boolean) {
+        if (!supportsShowHidden) return // host would silently ignore the flag
         if (_showHidden.value == show) return
         _showHidden.value = show
 

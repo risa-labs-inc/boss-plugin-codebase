@@ -1,74 +1,57 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
 import ai.rever.boss.plugin.api.FileNodeData
-import ai.rever.boss.plugin.api.FileSystemDataProvider
 import kotlinx.coroutines.runBlocking
-import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * TreeScanner routing (issue #6): provider-backed when the host advertises
- * supportsHiddenEntries, LocalFileScanner fallback otherwise.
+ * TreeScanner (issue #6, post-retirement): provider-backed scans with the
+ * showHidden flag passed through, graceful legacy delegation on host
+ * binaries that predate the opt-in, and null-provider degradation.
  */
 class TreeScannerTest {
 
-    private val marker = FileNodeData(name = "FROM_PROVIDER", path = "/marker", isDirectory = true)
-
-    /** Minimal fake: only the members TreeScanner touches are meaningful. */
-    private open class FakeProvider(private val supportsHidden: Boolean, private val result: FileNodeData?) :
-        FileSystemDataProvider {
-        override val supportsHiddenEntries: Boolean get() = supportsHidden
-        override suspend fun scanDirectory(path: String): FileNodeData? = result
-        override suspend fun scanDirectory(path: String, showHidden: Boolean): FileNodeData? = result
-        override suspend fun scanDirectoryWithDepth(path: String, maxDepth: Int, startDepth: Int): FileNodeData? = result
-        override suspend fun scanDirectoryWithDepth(path: String, maxDepth: Int, startDepth: Int, showHidden: Boolean): FileNodeData? = result
-        override fun directoryHasChildren(path: String): Boolean = false
-        override fun openFile(path: String, windowId: String) = Unit
-        override suspend fun createFile(parentPath: String, fileName: String): Result<String> = Result.failure(UnsupportedOperationException())
-        override suspend fun createFolder(parentPath: String, folderName: String): Result<String> = Result.failure(UnsupportedOperationException())
-        override suspend fun delete(path: String): Result<Unit> = Result.failure(UnsupportedOperationException())
-        override suspend fun rename(path: String, newName: String): Result<String> = Result.failure(UnsupportedOperationException())
-        override fun revealInFileManager(path: String): Result<Unit> = Result.failure(UnsupportedOperationException())
-        override fun copyToClipboard(text: String): Result<Unit> = Result.failure(UnsupportedOperationException())
-        override suspend fun writeFile(path: String, content: String): Result<Unit> = Result.failure(UnsupportedOperationException())
-        override suspend fun readFile(path: String): Result<String> = Result.failure(UnsupportedOperationException())
-        override fun getDownloadsDirectory(): String = ""
-        override fun getHomeDirectory(): String = ""
-    }
+    private fun node(name: String) = FileNodeData(name = name, path = "/$name", isDirectory = true)
 
     @Test
-    fun `routes to provider when it supports hidden entries`() {
-        val scanner = TreeScanner(FakeProvider(supportsHidden = true, result = marker))
-        assertTrue(scanner.usesProvider)
+    fun `passes the showHidden flag through to a supporting provider`() {
+        val received = mutableListOf<Boolean>()
+        val scanner = TreeScanner(HiddenAwareFakeProvider { _, showHidden ->
+            received.add(showHidden)
+            node("x")
+        })
+
+        assertTrue(scanner.supportsHiddenEntries)
         runBlocking {
-            assertEquals("FROM_PROVIDER", scanner.scanDirectory("/anything", showHidden = true)?.name)
-            assertEquals("FROM_PROVIDER", scanner.scanDirectoryWithDepth("/anything", 1, 0, showHidden = false)?.name)
+            scanner.scanDirectory("/p", showHidden = true)
+            scanner.scanDirectoryWithDepth("/p", 1, 0, showHidden = false)
+        }
+        assertEquals(listOf(true, false), received)
+    }
+
+    @Test
+    fun `interface defaults delegate to legacy scans on pre-opt-in hosts`() {
+        val scanner = TreeScanner(LegacyFakeProvider { node("legacy") })
+
+        assertFalse(scanner.supportsHiddenEntries)
+        runBlocking {
+            // The flag is ignored but trees still load — graceful degradation
+            assertEquals("legacy", scanner.scanDirectory("/p", showHidden = true)?.name)
+            assertEquals("legacy", scanner.scanDirectoryWithDepth("/p", 1, 0, showHidden = true)?.name)
         }
     }
 
     @Test
-    fun `falls back to local scanner when provider does not support hidden entries`() {
-        val scanner = TreeScanner(FakeProvider(supportsHidden = false, result = marker))
-        assertFalse(scanner.usesProvider)
-
-        val dir = File.createTempFile("treescanner-test", null).apply { delete(); mkdirs() }
-        try {
-            File(dir, "real.txt").writeText("x")
-            runBlocking {
-                val scanned = scanner.scanDirectory(dir.absolutePath, showHidden = false)
-                // Local scan of the real directory, not the provider's marker
-                assertEquals(listOf("real.txt"), scanned?.children?.map { it.name })
-            }
-        } finally {
-            dir.deleteRecursively()
+    fun `null provider yields null scans and no hidden support`() {
+        val scanner = TreeScanner(null)
+        assertFalse(scanner.supportsHiddenEntries)
+        runBlocking {
+            assertNull(scanner.scanDirectory("/p", showHidden = false))
+            assertNull(scanner.scanDirectoryWithDepth("/p", 1, 0, showHidden = false))
         }
-    }
-
-    @Test
-    fun `null provider always uses the local scanner`() {
-        assertFalse(TreeScanner(null).usesProvider)
     }
 }

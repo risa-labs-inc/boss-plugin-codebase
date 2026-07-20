@@ -13,7 +13,9 @@ import kotlin.time.Clock
 internal class FileIndexCache(
     private val maxSize: Int = 1000,
     private val maxDepthInitial: Int = 2,
-    private val scanner: TreeScanner = TreeScanner(null)
+    // Required on purpose: a TreeScanner(null) default would make every
+    // getNode silently return null for a caller that forgets to inject.
+    private val scanner: TreeScanner
 ) {
     private val cache = mutableMapOf<String, CachedNode>()
     private val accessOrder = mutableListOf<String>()
