@@ -24,6 +24,9 @@ internal class CodebaseMcpToolProvider(
     private val getProjectPath: () -> String?,
 ) : McpToolProvider {
 
+    // Provider-backed when the host honors showHidden, LocalFileScanner otherwise (#6)
+    private val scanner = TreeScanner(fileSystem)
+
     override fun tools(): List<McpToolDefinition> = listOf(
         McpToolDefinition(
             name = "codebase_tree",
@@ -35,10 +38,10 @@ internal class CodebaseMcpToolProvider(
                     ?: return@McpToolHandler McpToolResult("No path given and no project is open.", isError = true)
                 val depth = (args.int("depth") ?: 2).coerceIn(1, 6)
                 val includeHidden = args.boolean("include_hidden") ?: false
-                // Same scanner as the panel tree, so MCP and UI agree on what
-                // "hidden" means (the host provider can't opt into dot-entries).
+                // Same scanner facade as the panel tree, so MCP and UI agree
+                // on what "hidden" means.
                 val root = withContext(Dispatchers.IO) {
-                    LocalFileScanner.scanDirectoryWithDepth(path, depth, 0, showHidden = includeHidden)
+                    scanner.scanDirectoryWithDepth(path, depth, 0, showHidden = includeHidden)
                 } ?: return@McpToolHandler McpToolResult("Could not scan: $path", isError = true)
                 val sb = StringBuilder()
                 renderTree(root, "", sb)

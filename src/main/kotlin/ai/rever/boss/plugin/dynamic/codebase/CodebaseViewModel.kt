@@ -50,9 +50,14 @@ class CodebaseViewModel(
     private val _showHidden = MutableStateFlow(false)
     val showHidden: StateFlow<Boolean> = _showHidden.asStateFlow()
 
+    // Scans go through the host provider when it honors showHidden,
+    // LocalFileScanner otherwise (issue #6).
+    private val treeScanner = TreeScanner(fileSystemDataProvider)
+
     private val fileCache = FileIndexCache(
         maxSize = 1000,
-        maxDepthInitial = 2
+        maxDepthInitial = 2,
+        scanner = treeScanner
     )
 
     // Mutex to prevent race conditions during tree updates
@@ -186,7 +191,7 @@ class CodebaseViewModel(
         // so no per-child directoryHasChildren round-trips are needed here.
         val scannedNode = try {
             withContext(Dispatchers.IO) {
-                LocalFileScanner.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
+                treeScanner.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
             }
         } catch (e: Exception) {
             null
@@ -257,7 +262,7 @@ class CodebaseViewModel(
 
         val scannedNode = try {
             withContext(Dispatchers.IO) {
-                LocalFileScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
+                treeScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
             }
         } catch (e: Exception) {
             null
@@ -511,7 +516,7 @@ class CodebaseViewModel(
             // Reload children on IO dispatcher
             val loadedChildren = try {
                 withContext(Dispatchers.IO) {
-                    val scannedNode = LocalFileScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
+                    val scannedNode = treeScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
                     scannedNode?.children?.map { convertToFileNode(it) }
                 }
             } catch (e: Exception) {
