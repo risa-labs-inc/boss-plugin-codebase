@@ -96,7 +96,7 @@ fun CodebaseContent(
     }
 
     val projectPath = getProjectPath()
-    val projectName = projectPath?.substringAfterLast('/')?.ifEmpty { "Project" } ?: ""
+    val projectName = projectPath?.let { PathUtils.name(it) }?.ifEmpty { "Project" } ?: ""
     val hasProject = !projectPath.isNullOrEmpty()
 
     val tree by viewModel.fileTree.collectAsState()
@@ -256,8 +256,14 @@ fun CodebaseContent(
 
             Divider(color = BossDarkBorder)
 
-            // File tree (tapping empty space below the rows clears the selection;
-            // row clicks are consumed by the rows, cancelling this detector)
+            // File tree, fully virtualized: the visible tree is flattened into
+            // one LazyColumn item per row (issue #8), so deep expanded subtrees
+            // don't compose eagerly inside a single item. Tapping empty space
+            // below the rows clears the selection; row clicks are consumed by
+            // the rows, cancelling this detector.
+            val rows = remember(tree, expandedPaths) {
+                FileTreeUtils.flattenVisibleRows(tree, expandedPaths)
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -267,11 +273,11 @@ fun CodebaseContent(
                         detectTapGestures { viewModel.clearSelection() }
                     }
             ) {
-                tree?.let { rootNode ->
-                    items(rootNode.children, key = { it.path }) { node ->
-                        FileTreeItem(
-                            node = node,
-                            level = 0,
+                items(rows, key = { it.key }) { row ->
+                    when (row) {
+                        is VisibleRow.Node -> FileTreeItem(
+                            node = row.node,
+                            level = row.level,
                             expandedPaths = expandedPaths,
                             selectedPaths = selectedPaths,
                             onToggleExpanded = viewModel::toggleExpanded,
@@ -299,6 +305,8 @@ fun CodebaseContent(
                             onBulkDelete = { paths -> showBulkDeleteDialog = paths },
                             contextMenuProvider = contextMenuProvider
                         )
+                        is VisibleRow.Loading -> TreeStatusRow(level = row.level, loading = true)
+                        is VisibleRow.Empty -> TreeStatusRow(level = row.level, loading = false)
                     }
                 }
             }
@@ -495,7 +503,7 @@ fun FileTreeItem(
     val targetDirectory = if (node.isDirectory) {
         endNode.path
     } else {
-        node.path.substringBeforeLast('/')
+        PathUtils.parent(node.path)
     }
 
     // The actual path for this item (for operations like delete, rename, copy path)
@@ -663,129 +671,89 @@ fun FileTreeItem(
         baseModifier
     }
 
-    Column {
-        Row(
-            modifier = modifierWithContextMenu,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Expand/collapse icon for directories
-            when {
-                node.isDirectory && showExpandIndicator -> {
-                    Icon(
-                        imageVector = if (isExpanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight,
-                        contentDescription = if (isExpanded) "Collapse" else "Expand",
-                        tint = BossDarkTextSecondary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-                else -> {
-                    Spacer(modifier = Modifier.width(16.dp))
-                }
+    // Children are NOT composed here: the tree is flattened into the
+    // LazyColumn (VisibleRow), so this composable renders exactly one row.
+    Row(
+        modifier = modifierWithContextMenu,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Expand/collapse icon for directories
+        when {
+            node.isDirectory && showExpandIndicator -> {
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight,
+                    contentDescription = if (isExpanded) "Collapse" else "Expand",
+                    tint = BossDarkTextSecondary,
+                    modifier = Modifier.size(16.dp)
+                )
             }
-
-            Spacer(modifier = Modifier.width(4.dp))
-
-            // File/folder icon
-            val iconInfo = if (node.isDirectory) {
-                FileIcons.forFolder(isExpanded)
-            } else {
-                FileIcons.forFile(node.name)
+            else -> {
+                Spacer(modifier = Modifier.width(16.dp))
             }
-
-            Icon(
-                imageVector = iconInfo.icon,
-                contentDescription = if (node.isDirectory) "Folder" else "File",
-                tint = iconInfo.color,
-                modifier = Modifier.size(16.dp)
-            )
-
-            Spacer(modifier = Modifier.width(6.dp))
-
-            // File/folder name (compact display for directories); names that
-            // don't fit end in an ellipsis instead of clipping at the edge
-            Text(
-                text = if (node.isDirectory) compactDisplayName else node.name,
-                fontSize = 13.sp,
-                color = BossTextColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
         }
 
-        // Show children if expanded
-        if (node.isDirectory && isExpanded) {
-            val childrenToShow = endNode.children
-            val isLoading = endNode.loadingState == NodeLoadingState.CHECKING
+        Spacer(modifier = Modifier.width(4.dp))
 
-            when {
-                isLoading || (childrenToShow.isEmpty() && !endNode.isLoaded) -> {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(26.dp)
-                            .padding(start = (32 + level * 16).dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(12.dp),
-                            strokeWidth = 1.dp,
-                            color = BossDarkTextSecondary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Loading...",
-                            fontSize = 12.sp,
-                            color = BossDarkTextSecondary
-                        )
-                    }
-                }
-                endNode.isLoaded && childrenToShow.isEmpty() -> {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(26.dp)
-                            .padding(start = (32 + level * 16).dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "(empty)",
-                            fontSize = 12.sp,
-                            color = BossDarkTextSecondary.copy(alpha = 0.6f),
-                            fontStyle = FontStyle.Italic
-                        )
-                    }
-                }
-                else -> {
-                    childrenToShow.forEach { child ->
-                        FileTreeItem(
-                            node = child,
-                            level = level + 1,
-                            expandedPaths = expandedPaths,
-                            selectedPaths = selectedPaths,
-                            onToggleExpanded = onToggleExpanded,
-                            onSelectOnly = onSelectOnly,
-                            onToggleSelect = onToggleSelect,
-                            onRangeSelect = onRangeSelect,
-                            onFileDoubleClick = onFileDoubleClick,
-                            onCreateFile = onCreateFile,
-                            onCreateFolder = onCreateFolder,
-                            onDelete = onDelete,
-                            onRename = onRename,
-                            onCopyPath = onCopyPath,
-                            onCopyRelativePath = onCopyRelativePath,
-                            onRevealInFileManager = onRevealInFileManager,
-                            onOpenInTerminal = onOpenInTerminal,
-                            onOpenInEditor = onOpenInEditor,
-                            onOpenInBrowser = onOpenInBrowser,
-                            onOpenWithDefaultApp = onOpenWithDefaultApp,
-                            onBulkCopyPaths = onBulkCopyPaths,
-                            onBulkCopyRelativePaths = onBulkCopyRelativePaths,
-                            onBulkDelete = onBulkDelete,
-                            contextMenuProvider = contextMenuProvider
-                        )
-                    }
-                }
-            }
+        // File/folder icon
+        val iconInfo = if (node.isDirectory) {
+            FileIcons.forFolder(isExpanded)
+        } else {
+            FileIcons.forFile(node.name)
+        }
+
+        Icon(
+            imageVector = iconInfo.icon,
+            contentDescription = if (node.isDirectory) "Folder" else "File",
+            tint = iconInfo.color,
+            modifier = Modifier.size(16.dp)
+        )
+
+        Spacer(modifier = Modifier.width(6.dp))
+
+        // File/folder name (compact display for directories); names that
+        // don't fit end in an ellipsis instead of clipping at the edge
+        Text(
+            text = if (node.isDirectory) compactDisplayName else node.name,
+            fontSize = 13.sp,
+            color = BossTextColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * Placeholder row under an expanded directory: loading spinner or "(empty)".
+ * [level] is the parent directory's level, matching the pre-flattening indent.
+ */
+@Composable
+private fun TreeStatusRow(level: Int, loading: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(26.dp)
+            .padding(start = (32 + level * 16).dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                strokeWidth = 1.dp,
+                color = BossDarkTextSecondary
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "Loading...",
+                fontSize = 12.sp,
+                color = BossDarkTextSecondary
+            )
+        } else {
+            Text(
+                text = "(empty)",
+                fontSize = 12.sp,
+                color = BossDarkTextSecondary.copy(alpha = 0.6f),
+                fontStyle = FontStyle.Italic
+            )
         }
     }
 }
@@ -882,7 +850,7 @@ private fun CreateItemDialog(
                 }
 
                 Text(
-                    text = "in: ${targetPath.substringAfterLast('/')}",
+                    text = "in: ${PathUtils.name(targetPath)}",
                     fontSize = 11.sp,
                     color = BossDarkTextSecondary,
                     modifier = Modifier.padding(bottom = 12.dp)

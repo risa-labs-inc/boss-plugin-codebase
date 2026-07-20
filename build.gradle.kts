@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "ai.rever.boss.plugin.dynamic"
-version = "1.2.1"
+version = "1.3.0"
 
 java {
     toolchain {
@@ -33,10 +33,26 @@ repositories {
 
 dependencies {
     if (useLocalDependencies) {
-        // Local development: use boss-plugin-api JAR from sibling repo
-        compileOnly(files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.51.jar"))
+        // Local development: newest boss-plugin-api jar from the sibling repo,
+        // so this path never needs hand-bumping on api releases. CI resolves
+        // the 'latest' GitHub release instead (build/downloaded-deps).
+        // Note: nothing here enforces a minimum version — the showHidden
+        // opt-in exists from api 1.0.66, but older jars compile fine because
+        // TreeScanner resolves the new members reflectively at runtime.
+        val apiJarPattern = Regex("""boss-plugin-api-(\d+)\.(\d+)\.(\d+)\.jar""")
+        val newestApiJar = file("$bossPluginApiPath/build/libs").listFiles()
+            ?.mapNotNull { jar -> apiJarPattern.matchEntire(jar.name)?.let { m -> jar to m } }
+            ?.maxByOrNull { (_, m) ->
+                val (major, minor, patch) = m.destructured
+                major.toInt() * 1_000_000 + minor.toInt() * 1_000 + patch.toInt()
+            }?.first
+            ?: error(
+                "No boss-plugin-api jar found in $bossPluginApiPath/build/libs — " +
+                    "run ./gradlew buildPluginJar in the sibling boss-plugin-api checkout first."
+            )
+        compileOnly(files(newestApiJar))
         // compileOnly isn't visible to the test compilation/runtime
-        testImplementation(files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.51.jar"))
+        testImplementation(files(newestApiJar))
     } else {
         // CI: use downloaded JAR
         compileOnly(files("build/downloaded-deps/boss-plugin-api.jar"))

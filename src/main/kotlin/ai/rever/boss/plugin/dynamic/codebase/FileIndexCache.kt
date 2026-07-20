@@ -10,9 +10,10 @@ import kotlin.time.Clock
  * LRU cache for file system nodes with dynamic loading.
  * Converts between plugin API's FileNodeData and our FileNode type.
  */
-class FileIndexCache(
+internal class FileIndexCache(
     private val maxSize: Int = 1000,
-    private val maxDepthInitial: Int = 2
+    private val maxDepthInitial: Int = 2,
+    private val scanner: TreeScanner = TreeScanner(null)
 ) {
     private val cache = mutableMapOf<String, CachedNode>()
     private val accessOrder = mutableListOf<String>()
@@ -44,7 +45,7 @@ class FileIndexCache(
         }
 
         // Load node from file system
-        val nodeData = LocalFileScanner.scanDirectory(path, showHidden)
+        val nodeData = scanner.scanDirectory(path, showHidden)
         val node = nodeData?.let { convertToFileNode(it) }
 
         node?.let {

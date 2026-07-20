@@ -7,22 +7,22 @@ import java.nio.file.Files
 import java.nio.file.Paths
 
 /**
- * Plugin-local file scanner.
+ * Plugin-local file scanner — now the FALLBACK path only.
  *
- * The host's FileSystemDataProvider.scanDirectory* always filters out
- * dot-entries with no way to opt in, so the "show hidden" toggle scans the
- * filesystem directly. Mirrors the host scanner's behavior (sorting,
- * hasChildren, loading states) with an additional [showHidden] flag;
- * `build`/`node_modules` stay skipped regardless, matching the host.
+ * As of boss-plugin-api 1.0.66 the provider has a showHidden opt-in
+ * (supportsHiddenEntries), and [TreeScanner] routes scans through the host
+ * whenever it advertises support. This copy serves hosts older than that.
+ * Mirrors the host scanner's behavior (sorting, hasChildren, loading
+ * states) with the [showHidden] flag; `build`/`node_modules` stay skipped
+ * regardless, matching the host.
  *
  * DRIFT RISK: this duplicates BossConsole's DesktopFileScanner — if that
  * changes (filter set, sorting, placeholder semantics), this copy silently
  * diverges; the unit tests only pin the copy, they can't detect divergence.
  * Tracked in https://github.com/risa-labs-inc/boss-plugin-codebase/issues/6:
- * delete this file and go back through the provider once
- * FileSystemDataProvider gains a showHidden opt-in. Note writes, deletes,
- * renames, and opens still go through the host provider; only read-side
- * tree scans happen here.
+ * DELETE this file once minBossVersion can require a host with
+ * supportsHiddenEntries = true. Note writes, deletes, renames, and opens
+ * always go through the host provider; only fallback read scans happen here.
  *
  * ACCESS CONTROL: verified (2026-07) that the host's FileSystemDataProviderImpl
  * is a plain Dispatchers.IO wrapper over the same unscoped platform scanner —
