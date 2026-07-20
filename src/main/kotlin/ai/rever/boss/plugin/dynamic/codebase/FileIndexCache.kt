@@ -1,7 +1,6 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
 import ai.rever.boss.plugin.api.FileNodeData
-import ai.rever.boss.plugin.api.FileSystemDataProvider
 import ai.rever.boss.plugin.api.NodeLoadingStateData
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -13,8 +12,7 @@ import kotlin.time.Clock
  */
 class FileIndexCache(
     private val maxSize: Int = 1000,
-    private val maxDepthInitial: Int = 2,
-    private val fileSystemProvider: FileSystemDataProvider?
+    private val maxDepthInitial: Int = 2
 ) {
     private val cache = mutableMapOf<String, CachedNode>()
     private val accessOrder = mutableListOf<String>()
@@ -27,7 +25,7 @@ class FileIndexCache(
         var loadDepth: Int = 0
     )
 
-    suspend fun getNode(path: String, forceReload: Boolean = false): FileNode? = mutex.withLock {
+    suspend fun getNode(path: String, showHidden: Boolean, forceReload: Boolean = false): FileNode? = mutex.withLock {
         if (!forceReload) {
             cache[path]?.let { cached ->
                 // Update access order
@@ -39,7 +37,7 @@ class FileIndexCache(
         }
 
         // Load node from file system
-        val nodeData = fileSystemProvider?.scanDirectory(path)
+        val nodeData = LocalFileScanner.scanDirectory(path, showHidden)
         val node = nodeData?.let { convertToFileNode(it) }
 
         node?.let {

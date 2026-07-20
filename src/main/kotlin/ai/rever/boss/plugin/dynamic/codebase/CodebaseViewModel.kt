@@ -42,10 +42,12 @@ class CodebaseViewModel(
     private val _selectedPath = MutableStateFlow<String?>(null)
     val selectedPath: StateFlow<String?> = _selectedPath.asStateFlow()
 
+    private val _showHidden = MutableStateFlow(false)
+    val showHidden: StateFlow<Boolean> = _showHidden.asStateFlow()
+
     private val fileCache = FileIndexCache(
         maxSize = 1000,
-        maxDepthInitial = 2,
-        fileSystemProvider = fileSystemDataProvider
+        maxDepthInitial = 2
     )
 
     // Mutex to prevent race conditions during tree updates
@@ -77,7 +79,29 @@ class CodebaseViewModel(
         }
 
         // Callers may be on the Main dispatcher (e.g. LaunchedEffect) — keep the scan off it.
-        _fileTree.value = withContext(Dispatchers.IO) { fileCache.getNode(rootPath) }
+        _fileTree.value = withContext(Dispatchers.IO) { fileCache.getNode(rootPath, _showHidden.value) }
+    }
+
+    /**
+     * Toggle visibility of hidden (dot) files and folders, then rebuild the
+     * tree. Previously expanded directories are re-loaded so they don't sit
+     * on a loading spinner after the rebuild.
+     */
+    fun setShowHidden(show: Boolean) {
+        if (_showHidden.value == show) return
+        _showHidden.value = show
+
+        scope.launch {
+            val rootPath = getProjectPath()
+            if (rootPath.isNullOrEmpty()) return@launch
+            fileCache.clearCache()
+            loadFileTree(rootPath)
+            // Ancestors first (shorter paths) so children exist in the tree
+            // by the time their own reload runs.
+            _expandedPaths.value.sortedBy { it.length }.forEach { path ->
+                loadNodeChildren(path)
+            }
+        }
     }
 
     /**
@@ -134,7 +158,7 @@ class CodebaseViewModel(
         // so no per-child directoryHasChildren round-trips are needed here.
         val scannedNode = try {
             withContext(Dispatchers.IO) {
-                fileSystemDataProvider?.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0)
+                LocalFileScanner.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
             }
         } catch (e: Exception) {
             null
@@ -205,7 +229,7 @@ class CodebaseViewModel(
 
         val scannedNode = try {
             withContext(Dispatchers.IO) {
-                fileSystemDataProvider?.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0)
+                LocalFileScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
             }
         } catch (e: Exception) {
             null
@@ -402,7 +426,7 @@ class CodebaseViewModel(
             // Reload children on IO dispatcher
             val loadedChildren = try {
                 withContext(Dispatchers.IO) {
-                    val scannedNode = fileSystemDataProvider?.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0)
+                    val scannedNode = LocalFileScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
                     scannedNode?.children?.map { convertToFileNode(it) }
                 }
             } catch (e: Exception) {

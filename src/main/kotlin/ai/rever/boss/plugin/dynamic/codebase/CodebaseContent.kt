@@ -10,6 +10,7 @@ import ai.rever.boss.plugin.ui.ContextMenuItemData
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -85,6 +86,7 @@ fun CodebaseContent(
 
     val tree by viewModel.fileTree.collectAsState()
     val expandedPaths by viewModel.expandedPaths.collectAsState()
+    val showHidden by viewModel.showHidden.collectAsState()
     val listState = rememberLazyListState()
 
     // Dialog state for creating files/folders
@@ -194,7 +196,16 @@ fun CodebaseContent(
                         text = projectName,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                        color = BossThemeColors.TextPrimary
+                        color = BossThemeColors.TextPrimary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        imageVector = if (showHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                        contentDescription = if (showHidden) "Hide hidden files" else "Show hidden files",
+                        tint = if (showHidden) BossAccentBlue else BossDarkTextSecondary,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .clickable { viewModel.setShowHidden(!showHidden) }
                     )
                 }
             }
@@ -467,12 +478,17 @@ fun FileTreeItem(
         add(ContextMenuItemData(
             label = "Rename...",
             icon = Icons.Outlined.DriveFileRenameOutline,
-            onClick = { onRename(itemPath, node.name) }
+            // Rename targets the innermost dir of a compacted chain (itemPath is
+            // endNode.path), so prefill with that dir's name, not the chain top's.
+            onClick = { onRename(itemPath, endNode.name) }
         ))
         add(ContextMenuItemData(
             label = "Delete",
             icon = Icons.Outlined.Delete,
-            onClick = { onDelete(itemPath, itemName) }
+            // Delete the top of the compacted chain: the row displays the whole
+            // chain ("a/b/c"), so deleting must remove all of it — deleting the
+            // end node would only remove the innermost nested folder.
+            onClick = { onDelete(node.path, itemName) }
         ))
     }
 
