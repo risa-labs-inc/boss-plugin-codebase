@@ -2,6 +2,7 @@ package ai.rever.boss.plugin.dynamic.codebase
 
 import ai.rever.boss.plugin.api.FileNodeData
 import ai.rever.boss.plugin.api.FileSystemDataProvider
+import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
@@ -54,14 +55,21 @@ internal class TreeScanner(private val provider: FileSystemDataProvider?) {
                         Continuation::class.java
                     )
                 }
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
                 // Host API predates the opt-in (or probing failed) — use the fallback
+                println(
+                    "[codebase-plugin] TreeScanner: provider showHidden probe failed " +
+                        "(${t.javaClass.simpleName}) — using LocalFileScanner fallback"
+                )
                 scan = null
                 scanDepth = null
             }
         }
         scanMethod = scan
         scanWithDepthMethod = scanDepth
+        if (provider != null && scanMethod != null) {
+            println("[codebase-plugin] TreeScanner: host provider honors showHidden — provider-backed scans")
+        }
     }
 
     /** True when scans go through the host provider (it honors showHidden). */
@@ -94,9 +102,20 @@ internal class TreeScanner(private val provider: FileSystemDataProvider?) {
      * Invoke a reflected suspend method: pass the current continuation as the
      * trailing parameter; the call either returns the value directly or
      * COROUTINE_SUSPENDED (and resumes the continuation later).
+     *
+     * DISPATCH INVARIANT: this is an unintercepted continuation, so
+     * resumption happens on whatever thread the host resumes from. Every
+     * call site in this plugin wraps scans in withContext(Dispatchers.IO),
+     * which reinstates proper dispatch on return — keep that invariant for
+     * any new caller.
      */
     private suspend fun invokeSuspend(method: Method, receiver: Any, vararg args: Any?): Any? =
         suspendCoroutineUninterceptedOrReturn { continuation ->
-            method.invoke(receiver, *args, continuation)
+            try {
+                method.invoke(receiver, *args, continuation)
+            } catch (e: InvocationTargetException) {
+                // Surface the provider's real failure, not the reflective wrapper
+                throw e.targetException ?: e
+            }
         }
 }

@@ -18,7 +18,10 @@ object PathUtils {
 
     val platformSeparator: Char = java.io.File.separatorChar
 
-    /** Last path segment (the file or directory name). */
+    /**
+     * Last path segment (the file or directory name). Not trailing-separator
+     * safe on its own: "/p/a/" yields "" — call sites guard with ifEmpty.
+     */
     fun name(path: String, separator: Char = platformSeparator): String =
         path.substringAfterLast(separator)
 
