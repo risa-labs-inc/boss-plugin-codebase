@@ -36,7 +36,9 @@ dependencies {
         // Local development: newest boss-plugin-api jar from the sibling repo,
         // so this path never needs hand-bumping on api releases. CI resolves
         // the 'latest' GitHub release instead (build/downloaded-deps).
-        // 1.0.66+ needed for the FileSystemDataProvider showHidden opt-in.
+        // Note: nothing here enforces a minimum version — the showHidden
+        // opt-in exists from api 1.0.66, but older jars compile fine because
+        // TreeScanner resolves the new members reflectively at runtime.
         val apiJarPattern = Regex("""boss-plugin-api-(\d+)\.(\d+)\.(\d+)\.jar""")
         val newestApiJar = file("$bossPluginApiPath/build/libs").listFiles()
             ?.mapNotNull { jar -> apiJarPattern.matchEntire(jar.name)?.let { m -> jar to m } }
