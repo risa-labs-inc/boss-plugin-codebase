@@ -10,15 +10,26 @@ import ai.rever.boss.plugin.logging.BossLogger
 import ai.rever.boss.plugin.logging.LogCategory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
 private val logger = BossLogger.forComponent("CodebaseViewModel")
+
+/**
+ * Hard cap on watcher-registered directories so a pathological expand-all on
+ * a huge tree can't turn the poll tick into real work. Shallow (shortest)
+ * paths win the slots — they're the ones most likely on screen.
+ */
+private const val MAX_WATCHED_DIRS = 512
 
 /**
  * ViewModel for the Codebase panel.
@@ -68,6 +79,114 @@ class CodebaseViewModel(
 
     // Mutex to prevent race conditions during tree updates
     private val treeUpdateMutex = Mutex()
+
+    // Watches the directories whose contents are materialized in the tree
+    // (root + expanded compact chains) and quietly refreshes the ones that
+    // change on disk — git switches, external renames/creates/deletes.
+    private val fileWatcher = FileWatcherService(scope) { dirs ->
+        // Callback arrives on the watcher's IO coroutine; hop to the
+        // ViewModel's (Main-confined) scope, which selection code assumes.
+        scope.launch { refreshChangedDirectories(dirs) }
+    }
+
+    // Keeps the watched set in sync with what the tree actually displays.
+    // Held so dispose() can cancel it — [scope] outlives panel instances.
+    private val watchSetSyncJob: Job
+
+    init {
+        fileWatcher.start()
+        watchSetSyncJob = scope.launch {
+            combine(_fileTree, _expandedPaths, _showHidden) { tree, expanded, showHidden ->
+                watchedDirectories(tree, expanded) to showHidden
+            }.distinctUntilChanged().collect { (dirs, showHidden) ->
+                fileWatcher.setWatchedDirectories(dirs, showHidden)
+            }
+        }
+    }
+
+    /**
+     * Stop background work. Called when the panel leaves the composition —
+     * without this every panel instance would leak a poll loop on the
+     * plugin-lifetime scope.
+     */
+    fun dispose() {
+        watchSetSyncJob.cancel()
+        fileWatcher.stop()
+    }
+
+    /**
+     * The directories whose direct contents the tree currently displays:
+     * the project root plus, for every expanded row, its whole compact chain
+     * (the end node's children are what the row shows; the intermediates
+     * catch renames inside the chain).
+     */
+    private fun watchedDirectories(tree: FileNode?, expanded: Set<String>): Set<String> {
+        if (tree == null) return emptySet()
+        val dirs = LinkedHashSet<String>()
+        dirs.add(tree.path)
+        for (path in expanded.sortedBy { it.length }) {
+            if (dirs.size >= MAX_WATCHED_DIRS) break
+            val node = FileTreeUtils.findNodeByPath(tree, path) ?: continue
+            if (!node.isDirectory) continue
+            node.getCompactChain().forEach { dirs.add(it.path) }
+        }
+        return dirs
+    }
+
+    /**
+     * Quiet refresh driven by the file watcher: re-scan changed directories
+     * and merge the results in place. Unlike [refreshNode] there is no forced
+     * expansion and no spinner state; loaded subtrees of surviving children
+     * are preserved so the visible tree doesn't collapse under the user.
+     */
+    internal suspend fun refreshChangedDirectories(changedDirs: Set<String>) {
+        var treeChanged = false
+        // Ancestors first so a parent's merge lands before its child's rescan.
+        for (path in changedDirs.sortedBy { it.length }) {
+            val tree = _fileTree.value ?: return
+            val node = FileTreeUtils.findNodeByPath(tree, path) ?: continue
+            if (!node.isDirectory || !node.isLoaded) continue
+
+            val freshChildren = try {
+                treeScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
+                    ?.children?.map { convertToFileNode(it) }
+            } catch (e: Exception) {
+                null
+            } ?: continue
+
+            treeUpdateMutex.withLock {
+                val latest = _fileTree.value ?: return
+                if (FileTreeUtils.findNodeByPath(latest, path) == null) return@withLock
+                _fileTree.value = FileTreeUtils.updateNodeAtPath(latest, path) { existing ->
+                    val merged = FileTreeUtils.mergeFreshChildren(existing.children, freshChildren)
+                    existing.copy(
+                        children = merged,
+                        hasChildren = merged.isNotEmpty(),
+                        loadingState = NodeLoadingState.LOADED,
+                        loadDepth = maxOf(existing.loadDepth, 1)
+                    )
+                }
+                treeChanged = true
+            }
+        }
+        if (!treeChanged) return
+
+        // Directories recreated on disk (e.g. a git switch) come back
+        // unloaded; if they're expanded, fetch children so their rows don't
+        // sit on a spinner nothing resolves.
+        _expandedPaths.value.sortedBy { it.length }.forEach { path ->
+            val tree = _fileTree.value ?: return
+            val node = FileTreeUtils.findNodeByPath(tree, path)
+            if (node?.isDirectory == true && node.loadingState == NodeLoadingState.UNKNOWN) {
+                loadNodeChildren(path)
+            }
+        }
+
+        // Entries that vanished must leave the selection, and the warm-start
+        // cache (used by full reloads) is stale now.
+        pruneSelectionToTree()
+        fileCache.clearCache()
+    }
 
     /**
      * Directories that should not be compactly loaded due to deep hierarchies.
