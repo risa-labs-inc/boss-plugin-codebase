@@ -66,7 +66,10 @@ class FileIndexCache(
         accessOrder.remove(path)
         accessOrder.add(0, path)
 
-        // Also cache child directories for quick access
+        // Also cache child directories for quick access. Already-cached child
+        // paths are left as-is even if their showHidden flag differs — stale
+        // entries linger until re-accessed, where getNode's mismatch check
+        // rescans them (invalidation-on-read, by design).
         if (node.isDirectory && depth > 0) {
             node.children.forEach { child ->
                 if (child.isDirectory && !cache.containsKey(child.path)) {
