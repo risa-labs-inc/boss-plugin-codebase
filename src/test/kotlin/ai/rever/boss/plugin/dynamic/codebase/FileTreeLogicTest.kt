@@ -97,4 +97,38 @@ class FileTreeLogicTest {
     fun `visibleRowPaths of null tree is empty`() {
         assertEquals(emptyList(), FileTreeUtils.visibleRowPaths(null, expanded = setOf("/p")))
     }
+
+    @Test
+    fun `flattenVisibleRows assigns levels and emits placeholder rows`() {
+        val loadedEmpty = dir("/p/empty") // loaded, no children
+        val pending = dir("/p/pending", loaded = false) // expanded but not loaded yet
+        val b = dir("/p/a/b", children = listOf(file("/p/a/b/one.txt")))
+        val a = dir("/p/a", children = listOf(b))
+        val root = dir("/p", children = listOf(a, loadedEmpty, pending))
+
+        val rows = FileTreeUtils.flattenVisibleRows(
+            root,
+            expanded = setOf("/p/a", "/p/empty", "/p/pending")
+        )
+
+        assertEquals(
+            listOf(
+                VisibleRow.Node(a, 0),
+                VisibleRow.Node(b.children[0], 1), // one.txt under compacted a/b
+                VisibleRow.Node(loadedEmpty, 0),
+                VisibleRow.Empty("/p/empty", 0),
+                VisibleRow.Node(pending, 0),
+                VisibleRow.Loading("/p/pending", 0)
+            ),
+            rows
+        )
+    }
+
+    @Test
+    fun `flattenVisibleRows keys are unique per row kind`() {
+        val empty = dir("/p/x")
+        val root = dir("/p", children = listOf(empty))
+        val rows = FileTreeUtils.flattenVisibleRows(root, expanded = setOf("/p/x"))
+        assertEquals(rows.size, rows.map { it.key }.toSet().size)
+    }
 }

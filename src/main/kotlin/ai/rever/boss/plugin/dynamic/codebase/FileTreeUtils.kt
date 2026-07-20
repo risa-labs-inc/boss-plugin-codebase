@@ -1,6 +1,34 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
 /**
+ * One renderable row of the file tree, produced by
+ * [FileTreeUtils.flattenVisibleRows]. The panel renders one LazyColumn item
+ * per row (issue #8), so deep expanded trees stay virtualized instead of
+ * composing recursively inside a single item.
+ */
+sealed interface VisibleRow {
+    val level: Int
+
+    /** Stable LazyColumn key — unique across row kinds. */
+    val key: String
+
+    /** A file or directory row (directories may represent a compacted chain). */
+    data class Node(val node: FileNode, override val level: Int) : VisibleRow {
+        override val key: String get() = "n:${node.path}"
+    }
+
+    /** Loading indicator under an expanded directory whose children are being fetched. */
+    data class Loading(val parentPath: String, override val level: Int) : VisibleRow {
+        override val key: String get() = "l:$parentPath"
+    }
+
+    /** "(empty)" placeholder under an expanded, loaded, childless directory. */
+    data class Empty(val parentPath: String, override val level: Int) : VisibleRow {
+        override val key: String get() = "e:$parentPath"
+    }
+}
+
+/**
  * Utility functions for immutable file tree operations.
  */
 object FileTreeUtils {
@@ -19,23 +47,41 @@ object FileTreeUtils {
     }
 
     /**
-     * Flattens a tree into the row order the UI renders: children of a
-     * directory are visible when its row path is in [expanded], and compacted
+     * Flattens a tree into the exact row list the UI renders: children of a
+     * directory are visible when its row path is in [expanded], compacted
      * chains ("a/b/c") contribute the end node's children under the chain
-     * top's path — mirroring FileTreeItem.
+     * top's path, and expanded directories that are loading / empty get a
+     * placeholder row. This IS the render order — the panel and the
+     * selection logic both derive from it.
      */
-    fun visibleRowPaths(root: FileNode?, expanded: Set<String>): List<String> {
+    fun flattenVisibleRows(root: FileNode?, expanded: Set<String>): List<VisibleRow> {
         if (root == null) return emptyList()
-        val result = mutableListOf<String>()
-        fun walk(node: FileNode) {
-            result.add(node.path)
+        val rows = mutableListOf<VisibleRow>()
+        fun walk(node: FileNode, level: Int) {
+            rows.add(VisibleRow.Node(node, level))
             if (node.isDirectory && expanded.contains(node.path)) {
-                node.getCompactEndNode().children.forEach { walk(it) }
+                val endNode = node.getCompactEndNode()
+                val children = endNode.children
+                val isLoading = endNode.loadingState == NodeLoadingState.CHECKING
+                when {
+                    isLoading || (children.isEmpty() && !endNode.isLoaded) ->
+                        rows.add(VisibleRow.Loading(node.path, level))
+                    children.isEmpty() ->
+                        rows.add(VisibleRow.Empty(node.path, level))
+                    else -> children.forEach { walk(it, level + 1) }
+                }
             }
         }
-        root.children.forEach { walk(it) }
-        return result
+        root.children.forEach { walk(it, 0) }
+        return rows
     }
+
+    /**
+     * Paths of the visible node rows, in render order (shift-range select,
+     * copy ordering).
+     */
+    fun visibleRowPaths(root: FileNode?, expanded: Set<String>): List<String> =
+        flattenVisibleRows(root, expanded).mapNotNull { (it as? VisibleRow.Node)?.node?.path }
 
     /**
      * Drops paths nested under another path in the list — operating on the
