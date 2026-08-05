@@ -799,7 +799,16 @@ class CodebaseViewModel(
      * Reveal file or folder in system file manager.
      */
     fun revealInFileManager(path: String) {
-        fileSystemDataProvider?.revealInFileManager(path)
+        scope.launch(Dispatchers.IO) {
+            FileManagerRevealer.reveal(path).onFailure { error ->
+                logger.warn(
+                    LogCategory.FILE,
+                    "Failed to reveal path in file manager",
+                    mapOf("path" to path),
+                    error = error
+                )
+            }
+        }
     }
 
     /**
