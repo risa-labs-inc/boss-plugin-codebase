@@ -19,6 +19,7 @@ class CodebaseContextMenuTest {
             onOpenInTerminal = { invoked += "terminal" to it }
         )
 
+        assertEquals(5, items.size)
         assertEquals(
             listOf("New File", "New Folder", "Copy Path"),
             items.take(3).map { it.label }

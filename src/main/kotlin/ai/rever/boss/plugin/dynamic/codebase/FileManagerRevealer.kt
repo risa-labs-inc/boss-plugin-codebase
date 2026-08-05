@@ -17,12 +17,21 @@ internal object FileManagerRevealer {
         path: String,
         osName: String = System.getProperty("os.name").orEmpty(),
         launch: (List<String>) -> Unit = { command ->
-            ProcessBuilder(command).start()
+            ProcessBuilder(command)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start()
+                .outputStream
+                .close()
             Unit
         },
         launchCommandLine: (String) -> Unit = { command ->
             @Suppress("DEPRECATION")
-            Runtime.getRuntime().exec(command)
+            Runtime.getRuntime().exec(command).apply {
+                outputStream.close()
+                inputStream.close()
+                errorStream.close()
+            }
             Unit
         }
     ): Result<Unit> {
@@ -30,7 +39,7 @@ internal object FileManagerRevealer {
 
         val file = File(path)
         val normalizedOsName = osName.lowercase()
-        return runCatching {
+        return try {
             when {
                 normalizedOsName.contains("mac") -> {
                     launch(listOf("open", "-R", file.absolutePath))
@@ -60,6 +69,9 @@ internal object FileManagerRevealer {
                     }
                 }
             }
+            Result.success(Unit)
+        } catch (error: Exception) {
+            Result.failure(error)
         }
     }
 }

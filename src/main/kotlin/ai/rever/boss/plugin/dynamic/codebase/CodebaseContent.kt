@@ -66,6 +66,7 @@ private val BossAccentBlue: Color get() = BossThemeColors.AccentColor
 private val BossLinkBlue: Color get() = BossThemeColors.AccentColor
 private val BossErrorRed: Color get() = BossThemeColors.ErrorColor
 private val BossTextColor: Color get() = BossThemeColors.TextPrimary
+private val TreeRowHeight = 26.dp
 
 /**
  * Main content composable for the Codebase panel.
@@ -275,7 +276,7 @@ fun CodebaseContent(
             }
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                 val topPadding = 4.dp
-                val emptySpaceHeight = (maxHeight - topPadding - (26 * rows.size).dp).coerceAtLeast(0.dp)
+                val emptySpaceHeight = (maxHeight - topPadding - TreeRowHeight * rows.size).coerceAtLeast(0.dp)
                 val emptySpaceBaseModifier = Modifier
                     .fillMaxWidth()
                     .height(emptySpaceHeight)
@@ -708,7 +709,7 @@ fun FileTreeItem(
 
     val baseModifier = Modifier
         .fillMaxWidth()
-        .height(26.dp)
+        .height(TreeRowHeight)
         .background(if (isSelected) BossAccentBlue.copy(alpha = 0.25f) else Color.Transparent)
         // Right-clicking a row OUTSIDE the current selection collapses the
         // selection to that row (standard file-manager behavior), so the
@@ -821,7 +822,7 @@ private fun TreeStatusRow(level: Int, loading: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(26.dp)
+            .height(TreeRowHeight)
             .padding(start = (32 + level * 16).dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
