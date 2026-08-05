@@ -10,6 +10,8 @@ import java.io.IOException
  * revealInFileManager method back to itself, causing a StackOverflowError.
  * Keeping the small OS bridge here makes both row and project-root reveal
  * actions safe on affected hosts while preserving the intended behavior.
+ * Prefer the provider again once the plugin API exposes a fixed-host
+ * capability gate; probing the broken method itself is not recoverable.
  */
 internal object FileManagerRevealer {
 
@@ -45,13 +47,16 @@ internal object FileManagerRevealer {
                     launch(listOf("open", "-R", file.absolutePath))
                 }
 
-                normalizedOsName.contains("win") -> {
+                normalizedOsName.contains("windows") -> {
                     val absolutePath = file.absolutePath
-                    if (absolutePath.contains("  ")) {
-                        // Runtime.exec(String) collapses repeated spaces while
-                        // tokenizing. Open the parent instead of selecting a
-                        // corrupted path in that uncommon case.
-                        launch(listOf("explorer.exe", (file.parentFile ?: file).absolutePath))
+                    val needsArgvFallback = absolutePath.contains("  ") ||
+                        absolutePath.any { it.isWhitespace() && it != ' ' }
+                    if (needsArgvFallback) {
+                        // Runtime.exec(String) normalizes tokenizer-delimited
+                        // whitespace. Open the target directory (or the file's
+                        // parent) instead of selecting a corrupted path.
+                        val directory = if (file.isDirectory) file else file.parentFile ?: file
+                        launch(listOf("explorer.exe", directory.absolutePath))
                     } else {
                         // Explorer requires /select,"path" as one command-line
                         // fragment; argv launching quotes the entire fragment
@@ -61,7 +66,7 @@ internal object FileManagerRevealer {
                 }
 
                 else -> {
-                    val directory = (file.parentFile ?: file).absolutePath
+                    val directory = if (file.isDirectory) file.absolutePath else (file.parentFile ?: file).absolutePath
                     try {
                         launch(listOf("xdg-open", directory))
                     } catch (_: IOException) {

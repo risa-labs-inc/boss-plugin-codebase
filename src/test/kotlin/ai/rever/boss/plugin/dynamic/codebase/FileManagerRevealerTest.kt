@@ -2,6 +2,7 @@ package ai.rever.boss.plugin.dynamic.codebase
 
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -50,6 +51,25 @@ class FileManagerRevealerTest {
     }
 
     @Test
+    fun `linux reveal opens a directory itself`() {
+        val commands = mutableListOf<List<String>>()
+        val directory = Files.createTempDirectory("codebase-reveal-test").toFile()
+
+        try {
+            val result = FileManagerRevealer.reveal(
+                path = directory.absolutePath,
+                osName = "Linux",
+                launch = { commands += it }
+            )
+
+            assertTrue(result.isSuccess)
+            assertEquals(listOf(listOf("xdg-open", directory.absolutePath)), commands)
+        } finally {
+            directory.delete()
+        }
+    }
+
+    @Test
     fun `windows reveal selects the file with a quoted command line`() {
         val commands = mutableListOf<String>()
         val path = "/project/file with spaces.txt"
@@ -71,6 +91,24 @@ class FileManagerRevealerTest {
     fun `windows reveal with doubled spaces opens the parent`() {
         val commands = mutableListOf<List<String>>()
         val path = "/project/a  b/file.txt"
+
+        val result = FileManagerRevealer.reveal(
+            path = path,
+            osName = "Windows 11",
+            launch = { commands += it }
+        )
+
+        assertTrue(result.isSuccess)
+        assertEquals(
+            listOf(listOf("explorer.exe", File(path).parentFile.absolutePath)),
+            commands
+        )
+    }
+
+    @Test
+    fun `windows reveal with non-space whitespace opens the parent`() {
+        val commands = mutableListOf<List<String>>()
+        val path = "/project/a\tb/file.txt"
 
         val result = FileManagerRevealer.reveal(
             path = path,

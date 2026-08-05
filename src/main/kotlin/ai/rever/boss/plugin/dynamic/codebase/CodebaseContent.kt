@@ -66,6 +66,7 @@ private val BossAccentBlue: Color get() = BossThemeColors.AccentColor
 private val BossLinkBlue: Color get() = BossThemeColors.AccentColor
 private val BossErrorRed: Color get() = BossThemeColors.ErrorColor
 private val BossTextColor: Color get() = BossThemeColors.TextPrimary
+// Empty-space sizing assumes every visible tree/status row uses this height.
 private val TreeRowHeight = 26.dp
 
 /**
