@@ -66,12 +66,14 @@ private val BossAccentBlue: Color get() = BossThemeColors.AccentColor
 private val BossLinkBlue: Color get() = BossThemeColors.AccentColor
 private val BossErrorRed: Color get() = BossThemeColors.ErrorColor
 private val BossTextColor: Color get() = BossThemeColors.TextPrimary
+// Empty-space sizing assumes every visible tree/status row uses this height.
+private val TreeRowHeight = 26.dp
 
 /**
  * Main content composable for the Codebase panel.
  * Ported from bundled plugin v8.16.22 with exact UI parity.
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun CodebaseContent(
     fileSystemDataProvider: FileSystemDataProvider?,
@@ -269,55 +271,91 @@ fun CodebaseContent(
 
             // File tree, fully virtualized: the visible tree is flattened into
             // one LazyColumn item per row (issue #8), so deep expanded subtrees
-            // don't compose eagerly inside a single item. Tapping empty space
-            // below the rows clears the selection; row clicks are consumed by
-            // the rows, cancelling this detector.
+            // don't compose eagerly inside a single item.
             val rows = remember(tree, expandedPaths) {
                 FileTreeUtils.flattenVisibleRows(tree, expandedPaths)
             }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = 4.dp)
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val topPadding = 4.dp
+                val emptySpaceHeight = (maxHeight - topPadding - TreeRowHeight * rows.size).coerceAtLeast(0.dp)
+                val emptySpaceBaseModifier = Modifier
+                    .fillMaxWidth()
+                    .height(emptySpaceHeight)
+                    // Clear the row selection before the project-root menu opens.
+                    // Observe without consuming so the host context-menu handler
+                    // still receives the same secondary-button press.
+                    .pointerInput(projectPath) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                                    viewModel.clearSelection()
+                                }
+                            }
+                        }
+                    }
                     .pointerInput(Unit) {
                         detectTapGestures { viewModel.clearSelection() }
                     }
-            ) {
-                items(rows, key = { it.key }) { row ->
-                    when (row) {
-                        is VisibleRow.Node -> FileTreeItem(
-                            node = row.node,
-                            level = row.level,
-                            expandedPaths = expandedPaths,
-                            selectedPaths = selectedPaths,
-                            onToggleExpanded = viewModel::toggleExpanded,
-                            onSelectOnly = viewModel::selectOnly,
-                            onToggleSelect = viewModel::toggleSelection,
-                            onRangeSelect = viewModel::selectRangeTo,
-                            onFileDoubleClick = { file ->
-                                if (!file.isDirectory) {
-                                    viewModel.openFile(file.path)
-                                }
-                            },
-                            onCreateFile = { targetPath -> showCreateFileDialog = targetPath },
-                            onCreateFolder = { targetPath -> showCreateFolderDialog = targetPath },
-                            onDelete = { path, name -> showDeleteDialog = Pair(path, name) },
-                            onRename = { path, name -> showRenameDialog = Pair(path, name) },
-                            onCopyPath = { path -> viewModel.copyPath(path) },
-                            onCopyRelativePath = { path -> viewModel.copyRelativePath(path) },
-                            onRevealInFileManager = { path -> viewModel.revealInFileManager(path) },
-                            onOpenInTerminal = { path -> viewModel.openInTerminal(path) },
-                            onOpenInEditor = { path -> viewModel.openFileInEditor(path) },
-                            onOpenInBrowser = { path -> viewModel.openFileInBrowser(path) },
-                            onOpenWithDefaultApp = { path -> viewModel.openWithDefaultApp(path) },
-                            onBulkCopyPaths = { paths -> viewModel.copyPaths(paths) },
-                            onBulkCopyRelativePaths = { paths -> viewModel.copyRelativePaths(paths) },
-                            onBulkDelete = { paths -> showBulkDeleteDialog = paths },
-                            contextMenuProvider = contextMenuProvider
-                        )
-                        is VisibleRow.Loading -> TreeStatusRow(level = row.level, loading = true)
-                        is VisibleRow.Empty -> TreeStatusRow(level = row.level, loading = false)
+                val emptySpaceMenuItems = projectRootContextMenuItems(
+                    projectPath = projectPath.orEmpty(),
+                    onCreateFile = { showCreateFileDialog = it },
+                    onCreateFolder = { showCreateFolderDialog = it },
+                    onCopyPath = viewModel::copyPath,
+                    onRevealInFileManager = viewModel::revealInFileManager,
+                    onOpenInTerminal = viewModel::openInTerminal
+                )
+                val emptySpaceModifier = if (contextMenuProvider != null) {
+                    contextMenuProvider.applyContextMenu(emptySpaceBaseModifier, emptySpaceMenuItems)
+                } else {
+                    emptySpaceBaseModifier
+                }
+
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(top = topPadding)
+                ) {
+                    items(rows, key = { it.key }) { row ->
+                        when (row) {
+                            is VisibleRow.Node -> FileTreeItem(
+                                node = row.node,
+                                level = row.level,
+                                expandedPaths = expandedPaths,
+                                selectedPaths = selectedPaths,
+                                onToggleExpanded = viewModel::toggleExpanded,
+                                onSelectOnly = viewModel::selectOnly,
+                                onToggleSelect = viewModel::toggleSelection,
+                                onRangeSelect = viewModel::selectRangeTo,
+                                onFileDoubleClick = { file ->
+                                    if (!file.isDirectory) {
+                                        viewModel.openFile(file.path)
+                                    }
+                                },
+                                onCreateFile = { targetPath -> showCreateFileDialog = targetPath },
+                                onCreateFolder = { targetPath -> showCreateFolderDialog = targetPath },
+                                onDelete = { path, name -> showDeleteDialog = Pair(path, name) },
+                                onRename = { path, name -> showRenameDialog = Pair(path, name) },
+                                onCopyPath = { path -> viewModel.copyPath(path) },
+                                onCopyRelativePath = { path -> viewModel.copyRelativePath(path) },
+                                onRevealInFileManager = { path -> viewModel.revealInFileManager(path) },
+                                onOpenInTerminal = { path -> viewModel.openInTerminal(path) },
+                                onOpenInEditor = { path -> viewModel.openFileInEditor(path) },
+                                onOpenInBrowser = { path -> viewModel.openFileInBrowser(path) },
+                                onOpenWithDefaultApp = { path -> viewModel.openWithDefaultApp(path) },
+                                onBulkCopyPaths = { paths -> viewModel.copyPaths(paths) },
+                                onBulkCopyRelativePaths = { paths -> viewModel.copyRelativePaths(paths) },
+                                onBulkDelete = { paths -> showBulkDeleteDialog = paths },
+                                contextMenuProvider = contextMenuProvider
+                            )
+                            is VisibleRow.Loading -> TreeStatusRow(level = row.level, loading = true)
+                            is VisibleRow.Empty -> TreeStatusRow(level = row.level, loading = false)
+                        }
+                    }
+                    if (emptySpaceHeight > 0.dp) {
+                        item(key = "project-root-empty-space") {
+                            Box(modifier = emptySpaceModifier)
+                        }
                     }
                 }
             }
@@ -477,6 +515,46 @@ fun CodebaseContent(
 }
 
 /**
+ * Context menu for whitespace below the tree. Whitespace represents the
+ * project root, which is not rendered as a normal tree row, so expose the
+ * useful directory actions without destructive rename/delete operations.
+ */
+internal fun projectRootContextMenuItems(
+    projectPath: String,
+    onCreateFile: (String) -> Unit,
+    onCreateFolder: (String) -> Unit,
+    onCopyPath: (String) -> Unit,
+    onRevealInFileManager: (String) -> Unit,
+    onOpenInTerminal: (String) -> Unit
+): List<ContextMenuItemData> = listOf(
+    ContextMenuItemData(
+        label = "New File",
+        icon = Icons.AutoMirrored.Outlined.NoteAdd,
+        onClick = { onCreateFile(projectPath) }
+    ),
+    ContextMenuItemData(
+        label = "New Folder",
+        icon = Icons.Outlined.CreateNewFolder,
+        onClick = { onCreateFolder(projectPath) }
+    ),
+    ContextMenuItemData(
+        label = "Copy Path",
+        icon = Icons.Outlined.ContentCopy,
+        onClick = { onCopyPath(projectPath) }
+    ),
+    ContextMenuItemData(
+        label = getRevealInFileManagerLabel(),
+        icon = Icons.AutoMirrored.Outlined.OpenInNew,
+        onClick = { onRevealInFileManager(projectPath) }
+    ),
+    ContextMenuItemData(
+        label = "Open in Terminal",
+        icon = Icons.Outlined.Terminal,
+        onClick = { onOpenInTerminal(projectPath) }
+    )
+)
+
+/**
  * File tree item composable with IntelliJ-style compact paths.
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
@@ -632,7 +710,7 @@ fun FileTreeItem(
 
     val baseModifier = Modifier
         .fillMaxWidth()
-        .height(26.dp)
+        .height(TreeRowHeight)
         .background(if (isSelected) BossAccentBlue.copy(alpha = 0.25f) else Color.Transparent)
         // Right-clicking a row OUTSIDE the current selection collapses the
         // selection to that row (standard file-manager behavior), so the
@@ -745,7 +823,7 @@ private fun TreeStatusRow(level: Int, loading: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(26.dp)
+            .height(TreeRowHeight)
             .padding(start = (32 + level * 16).dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
