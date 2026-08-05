@@ -6,15 +6,30 @@ import ai.rever.boss.plugin.api.FileSystemDataProvider
 import ai.rever.boss.plugin.api.NodeLoadingStateData
 import ai.rever.boss.plugin.api.ProjectData
 import ai.rever.boss.plugin.api.SplitViewOperations
+import ai.rever.boss.plugin.logging.BossLogger
+import ai.rever.boss.plugin.logging.LogCategory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.UUID
+
+private val logger = BossLogger.forComponent("CodebaseViewModel")
+
+/**
+ * Hard cap on watcher-registered directories so a pathological expand-all on
+ * a huge tree can't turn the poll tick into real work. Shallowest paths win
+ * the slots — they're the ones most likely on screen.
+ */
+private const val MAX_WATCHED_DIRS = 512
 
 /**
  * ViewModel for the Codebase panel.
@@ -50,13 +65,140 @@ class CodebaseViewModel(
     private val _showHidden = MutableStateFlow(false)
     val showHidden: StateFlow<Boolean> = _showHidden.asStateFlow()
 
+    // All scans go through the host provider (issue #6 retirement).
+    private val treeScanner = TreeScanner(fileSystemDataProvider)
+
+    /** False on host binaries that predate the showHidden overloads — the UI hides the toggle. */
+    val supportsShowHidden: Boolean get() = treeScanner.supportsHiddenEntries
+
     private val fileCache = FileIndexCache(
         maxSize = 1000,
-        maxDepthInitial = 2
+        maxDepthInitial = 2,
+        scanner = treeScanner
     )
 
     // Mutex to prevent race conditions during tree updates
     private val treeUpdateMutex = Mutex()
+
+    // Watches the directories whose contents are materialized in the tree
+    // (root + expanded compact chains) and quietly refreshes the ones that
+    // change on disk — git switches, external renames/creates/deletes.
+    private val fileWatcher = FileWatcherService(scope) { dirs ->
+        // Callback arrives on the watcher's IO coroutine; hop to the
+        // ViewModel's (Main-confined) scope, which selection code assumes.
+        scope.launch { refreshChangedDirectories(dirs) }
+    }
+
+    // Keeps the watched set in sync with what the tree actually displays.
+    // Held so dispose() can cancel it — [scope] outlives panel instances.
+    private val watchSetSyncJob: Job
+
+    init {
+        fileWatcher.start()
+        watchSetSyncJob = scope.launch {
+            combine(_fileTree, _expandedPaths, _showHidden) { tree, expanded, showHidden ->
+                watchedDirectories(tree, expanded) to showHidden
+            }.distinctUntilChanged().collect { (dirs, showHidden) ->
+                fileWatcher.setWatchedDirectories(dirs, showHidden)
+            }
+        }
+    }
+
+    /**
+     * Stop background work. Called when the panel leaves the composition —
+     * without this every panel instance would leak a poll loop on the
+     * plugin-lifetime scope.
+     */
+    fun dispose() {
+        watchSetSyncJob.cancel()
+        fileWatcher.stop()
+    }
+
+    /**
+     * The directories whose direct contents the tree currently displays:
+     * the project root plus, for every expanded row, its whole compact chain
+     * (the end node's children are what the row shows; the intermediates
+     * catch renames inside the chain).
+     */
+    private fun watchedDirectories(tree: FileNode?, expanded: Set<String>): Set<String> {
+        if (tree == null) return emptySet()
+        val dirs = LinkedHashSet<String>()
+        dirs.add(tree.path)
+        // Depth (separator count), not string length: a deep path with short
+        // segment names must not beat a shallow one to the capped slots.
+        val byDepth = compareBy<String> { it.count { c -> c == PathUtils.platformSeparator } }
+        for (path in expanded.sortedWith(byDepth)) {
+            if (dirs.size >= MAX_WATCHED_DIRS) break
+            val node = FileTreeUtils.findNodeByPath(tree, path) ?: continue
+            if (!node.isDirectory) continue
+            node.getCompactChain().forEach { dirs.add(it.path) }
+        }
+        return dirs
+    }
+
+    /**
+     * Quiet refresh driven by the file watcher: re-scan changed directories
+     * and merge the results in place. Unlike [refreshNode] there is no forced
+     * expansion and no spinner state; loaded subtrees of surviving children
+     * are preserved so the visible tree doesn't collapse under the user.
+     */
+    internal suspend fun refreshChangedDirectories(changedDirs: Set<String>) {
+        var treeChanged = false
+        // Ancestors first so a parent's merge lands before its child's rescan.
+        // Sorting by length is a safe ancestry proxy: an ancestor path is a
+        // strict prefix of its descendants, hence always shorter.
+        for (path in changedDirs.sortedBy { it.length }) {
+            val tree = _fileTree.value ?: return
+            val node = FileTreeUtils.findNodeByPath(tree, path) ?: continue
+            if (!node.isDirectory || !node.isLoaded) continue
+
+            val freshChildren = try {
+                treeScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
+                    ?.children?.map { convertToFileNode(it) }
+            } catch (e: Exception) {
+                null
+            } ?: continue
+
+            treeUpdateMutex.withLock {
+                val latest = _fileTree.value ?: return
+                val existing = FileTreeUtils.findNodeByPath(latest, path) ?: return@withLock
+                val merged = FileTreeUtils.mergeFreshChildren(existing.children, freshChildren)
+                // Structural no-op (e.g. only an entry's mtime moved): skip
+                // the tree write AND the downstream side effects — this is
+                // what keeps busy build phases from repeatedly clearing the
+                // warm-start cache and re-pruning the selection. The
+                // not-loaded case still writes: it upgrades a node a parent
+                // merge just recreated to LOADED.
+                if (existing.isLoaded && merged == existing.children) return@withLock
+                _fileTree.value = FileTreeUtils.updateNodeAtPath(latest, path) { current ->
+                    current.copy(
+                        children = merged,
+                        hasChildren = merged.isNotEmpty(),
+                        loadingState = NodeLoadingState.LOADED,
+                        loadDepth = maxOf(current.loadDepth, 1)
+                    )
+                }
+                treeChanged = true
+            }
+        }
+        if (!treeChanged) return
+
+        // Directories recreated on disk (e.g. a git switch) come back
+        // unloaded; if they're expanded, fetch children so their rows don't
+        // sit on a spinner nothing resolves.
+        _expandedPaths.value.sortedBy { it.length }.forEach { path ->
+            val tree = _fileTree.value ?: return
+            val node = FileTreeUtils.findNodeByPath(tree, path)
+            if (node?.isDirectory == true && node.loadingState == NodeLoadingState.UNKNOWN) {
+                loadNodeChildren(path)
+            }
+        }
+
+        // Entries that vanished must leave the selection, and the warm-start
+        // cache (used by full reloads) is stale now.
+        pruneSelectionToTree()
+        fileCache.clearCache()
+    }
 
     /**
      * Directories that should not be compactly loaded due to deep hierarchies.
@@ -93,6 +235,7 @@ class CodebaseViewModel(
      * on a loading spinner after the rebuild.
      */
     fun setShowHidden(show: Boolean) {
+        if (!supportsShowHidden) return // host would silently ignore the flag
         if (_showHidden.value == show) return
         _showHidden.value = show
 
@@ -184,10 +327,9 @@ class CodebaseViewModel(
 
         // Load children. The scan already fills hasChildren for edge directories,
         // so no per-child directoryHasChildren round-trips are needed here.
+        // TreeScanner dispatches to IO internally
         val scannedNode = try {
-            withContext(Dispatchers.IO) {
-                LocalFileScanner.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
-            }
+            treeScanner.scanDirectoryWithDepth(targetPath, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
         } catch (e: Exception) {
             null
         }
@@ -255,10 +397,9 @@ class CodebaseViewModel(
         if (node?.isDirectory != true) return
         if (node.isLoaded) return
 
+        // TreeScanner dispatches to IO internally
         val scannedNode = try {
-            withContext(Dispatchers.IO) {
-                LocalFileScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
-            }
+            treeScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
         } catch (e: Exception) {
             null
         }
@@ -322,6 +463,8 @@ class CodebaseViewModel(
         val windowId = getWindowId()
         if (windowId != null) {
             fileSystemDataProvider?.openFile(path, windowId)
+        } else {
+            logger.debug(LogCategory.FILE, "openFile skipped: no window id", mapOf("path" to path))
         }
     }
 
@@ -329,7 +472,7 @@ class CodebaseViewModel(
      * Force-open a file in the browser tab (for images, PDFs, etc.).
      */
     fun openFileInBrowser(path: String) {
-        val fileName = path.substringAfterLast('/')
+        val fileName = PathUtils.name(path).ifEmpty { path }
         splitViewOperations?.openFileInBrowser(path, fileName)
     }
 
@@ -337,7 +480,7 @@ class CodebaseViewModel(
      * Force-open a file in the code editor (overriding smart routing).
      */
     fun openFileInEditor(path: String) {
-        val fileName = path.substringAfterLast('/')
+        val fileName = PathUtils.name(path).ifEmpty { path }
         splitViewOperations?.openFileInEditor(path, fileName)
     }
 
@@ -424,7 +567,7 @@ class CodebaseViewModel(
     fun pickDirectory() {
         directoryPickerProvider?.pickDirectory { path ->
             path?.let {
-                val projectName = it.substringAfterLast('/').ifEmpty { "Unknown" }
+                val projectName = PathUtils.name(it).ifEmpty { "Unknown" }
                 onSelectProject?.invoke(projectName, it)
             }
         }
@@ -450,7 +593,7 @@ class CodebaseViewModel(
      */
     fun getProjectName(): String {
         val projectPath = getProjectPath() ?: return ""
-        return projectPath.substringAfterLast('/').ifEmpty { "Project" }
+        return PathUtils.name(projectPath).ifEmpty { "Project" }
     }
 
     /**
@@ -508,12 +651,10 @@ class CodebaseViewModel(
                 treeUpdateMutex.unlock()
             }
 
-            // Reload children on IO dispatcher
+            // Reload children (TreeScanner dispatches to IO internally)
             val loadedChildren = try {
-                withContext(Dispatchers.IO) {
-                    val scannedNode = LocalFileScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
-                    scannedNode?.children?.map { convertToFileNode(it) }
-                }
+                treeScanner.scanDirectoryWithDepth(path, maxDepth = 1, startDepth = 0, showHidden = _showHidden.value)
+                    ?.children?.map { convertToFileNode(it) }
             } catch (e: Exception) {
                 null
             }
@@ -568,7 +709,7 @@ class CodebaseViewModel(
             if (result.isSuccess) {
                 pruneSelection(listOf(path))
                 // Refresh parent directory
-                val parentPath = path.substringBeforeLast('/')
+                val parentPath = PathUtils.parent(path)
                 if (parentPath.isNotEmpty()) {
                     refreshNode(parentPath)
                 }
@@ -601,14 +742,14 @@ class CodebaseViewModel(
                     if (provider.delete(path).isSuccess) {
                         deleted.add(path)
                     } else {
-                        failedNames.add(path.substringAfterLast('/'))
+                        failedNames.add(PathUtils.name(path))
                     }
                 }
             }
 
             if (deleted.isNotEmpty()) {
                 pruneSelection(deleted)
-                deleted.map { it.substringBeforeLast('/') }
+                deleted.map { PathUtils.parent(it) }
                     .distinct()
                     .filter { it.isNotEmpty() }
                     .forEach { refreshNode(it) }
@@ -626,7 +767,7 @@ class CodebaseViewModel(
      */
     private fun pruneSelection(deletedPaths: List<String>) {
         val remaining = _selectedPaths.value.filterNot { selected ->
-            deletedPaths.any { selected == it || selected.startsWith("$it/") }
+            deletedPaths.any { selected == it || PathUtils.isNestedUnder(selected, it) }
         }.toSet()
         _selectedPaths.value = remaining
         if (selectionAnchor !in remaining) selectionAnchor = remaining.firstOrNull()
@@ -646,7 +787,7 @@ class CodebaseViewModel(
             onResult(result)
             if (result.isSuccess) {
                 // Refresh parent directory
-                val parentPath = path.substringBeforeLast('/')
+                val parentPath = PathUtils.parent(path)
                 if (parentPath.isNotEmpty()) {
                     refreshNode(parentPath)
                 }
@@ -690,12 +831,7 @@ class CodebaseViewModel(
      */
     fun copyRelativePath(path: String) {
         val projectPath = getProjectPath() ?: ""
-        val relativePath = if (projectPath.isNotEmpty() && path.startsWith(projectPath)) {
-            path.removePrefix(projectPath).removePrefix("/")
-        } else {
-            path
-        }
-        fileSystemDataProvider?.copyToClipboard(relativePath)
+        fileSystemDataProvider?.copyToClipboard(PathUtils.relativize(path, projectPath))
     }
 
     /**
@@ -715,13 +851,8 @@ class CodebaseViewModel(
     fun copyRelativePaths(paths: List<String>) {
         val projectPath = getProjectPath() ?: ""
         val index = nodeIndex()
-        val relativePaths = orderSelected(paths).map { toCopyPath(it, index) }.map { path ->
-            if (projectPath.isNotEmpty() && path.startsWith(projectPath)) {
-                path.removePrefix(projectPath).removePrefix("/")
-            } else {
-                path
-            }
-        }
+        val relativePaths = orderSelected(paths).map { toCopyPath(it, index) }
+            .map { PathUtils.relativize(it, projectPath) }
         fileSystemDataProvider?.copyToClipboard(relativePaths.joinToString("\n"))
     }
 
@@ -734,7 +865,7 @@ class CodebaseViewModel(
         val index = nodeIndex()
         return orderSelected(paths).map { path ->
             val node = index[path]
-            if (node?.isDirectory == true) node.getCompactDisplayName() else path.substringAfterLast('/')
+            if (node?.isDirectory == true) node.getCompactDisplayName() else PathUtils.name(path)
         }
     }
 

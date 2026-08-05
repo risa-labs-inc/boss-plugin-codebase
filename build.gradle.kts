@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "ai.rever.boss.plugin.dynamic"
-version = "1.2.0"
+version = "1.5.3"
 
 java {
     toolchain {
@@ -33,10 +33,38 @@ repositories {
 
 dependencies {
     if (useLocalDependencies) {
-        // Local development: use boss-plugin-api JAR from sibling repo
-        compileOnly(files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.51.jar"))
+        // Local development: newest boss-plugin-api jar from the sibling repo,
+        // so this path never needs hand-bumping on api releases. CI resolves
+        // the 'latest' GitHub release instead (build/downloaded-deps).
+        // Compiling needs api >= 1.0.66 (TreeScanner calls the showHidden
+        // overloads statically); plugin.json's minApiVersion gates installs
+        // to hosts whose runtime api layer has them.
+        //
+        // The lookup lives in a provider so it runs at dependency-RESOLUTION
+        // time, not configuration time: clean/help/tasks still work on a
+        // fresh checkout without the sibling jar built; compilation fails
+        // with this actionable message instead of unresolved-reference noise.
+        val newestApiJar = provider {
+            val apiJarPattern = Regex("""boss-plugin-api-(\d+)\.(\d+)\.(\d+)\.jar""")
+            file("$bossPluginApiPath/build/libs").listFiles()
+                ?.mapNotNull { jar -> apiJarPattern.matchEntire(jar.name)?.let { m -> jar to m } }
+                // Lexicographic (major, minor, patch) — no packing arithmetic
+                // that would mis-order components >= 1000.
+                ?.maxWithOrNull(
+                    compareBy(
+                        { it.second.groupValues[1].toInt() },
+                        { it.second.groupValues[2].toInt() },
+                        { it.second.groupValues[3].toInt() }
+                    )
+                )?.first
+                ?: error(
+                    "No boss-plugin-api jar found in $bossPluginApiPath/build/libs — " +
+                        "run ./gradlew buildPluginJar in the sibling boss-plugin-api checkout first."
+                )
+        }
+        compileOnly(files(newestApiJar))
         // compileOnly isn't visible to the test compilation/runtime
-        testImplementation(files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.51.jar"))
+        testImplementation(files(newestApiJar))
     } else {
         // CI: use downloaded JAR
         compileOnly(files("build/downloaded-deps/boss-plugin-api.jar"))
