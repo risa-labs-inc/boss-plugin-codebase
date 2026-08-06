@@ -4,6 +4,7 @@ import ai.rever.boss.plugin.api.ContextMenuProvider
 import ai.rever.boss.plugin.api.DirectoryPickerProvider
 import ai.rever.boss.plugin.api.FileSystemDataProvider
 import ai.rever.boss.plugin.api.SplitViewOperations
+import ai.rever.boss.plugin.ui.BossDialog
 import ai.rever.boss.plugin.ui.BossTheme
 import ai.rever.boss.plugin.ui.BossThemeColors
 import ai.rever.boss.plugin.ui.ContextMenuItemData
@@ -52,7 +53,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.CoroutineScope
 
 // UI chrome colors now consume reactive BOSS theme tokens so the panel
@@ -898,6 +898,11 @@ private fun validateFileName(name: String): String? {
  * Dialog for creating a new file or folder.
  */
 @Composable
+// BossDialog, not Dialog, in all four dialogs below: under JxBrowser HARDWARE_ACCELERATED - the host
+// default on every platform since BossConsole 9.4.1 - Chromium composites its own native window over
+// the Compose scene, so a plain Compose Dialog in a plugin panel is drawn BEHIND the page. The file
+// tree sits beside browser tabs constantly, so "New File" over a page was invisible. BossDialog routes
+// through the host's always-on-top overlay window and falls back to exactly this Dialog off-screen.
 private fun CreateItemDialog(
     title: String,
     icon: ImageVector,
@@ -914,7 +919,7 @@ private fun CreateItemDialog(
         focusRequester.requestFocus()
     }
 
-    Dialog(onDismissRequest = onDismiss) {
+    BossDialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(8.dp),
             color = BossHeaderColor,
@@ -1043,7 +1048,7 @@ private fun DeleteConfirmationDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    Dialog(onDismissRequest = onDismiss) {
+    BossDialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(8.dp),
             color = BossHeaderColor,
@@ -1139,7 +1144,7 @@ private fun BulkDeleteConfirmationDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    Dialog(onDismissRequest = onDismiss) {
+    BossDialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(8.dp),
             color = BossHeaderColor,
@@ -1257,7 +1262,7 @@ private fun RenameItemDialog(
         focusRequester.requestFocus()
     }
 
-    Dialog(onDismissRequest = onDismiss) {
+    BossDialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(8.dp),
             color = BossHeaderColor,
