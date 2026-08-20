@@ -38,6 +38,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -708,10 +709,15 @@ fun FileTreeItem(
     // plain click / Cmd(Ctrl)+click / Shift+click.
     val windowInfo = LocalWindowInfo.current
 
+    // Kept as a value (not inlined into .background) so the icon tint can be
+    // contrast-checked against the surface actually behind it: on a light theme
+    // the selection wash is what a brand color has to stay legible against.
+    val rowFill = if (isSelected) BossAccentBlue.copy(alpha = 0.25f) else Color.Transparent
+
     val baseModifier = Modifier
         .fillMaxWidth()
         .height(TreeRowHeight)
-        .background(if (isSelected) BossAccentBlue.copy(alpha = 0.25f) else Color.Transparent)
+        .background(rowFill)
         // Right-clicking a row OUTSIDE the current selection collapses the
         // selection to that row (standard file-manager behavior), so the
         // highlight always matches what the context menu will act on.
@@ -796,7 +802,9 @@ fun FileTreeItem(
         Icon(
             imageVector = iconInfo.icon,
             contentDescription = if (node.isDirectory) "Folder" else "File",
-            tint = iconInfo.color,
+            // Brand colors are fixed, the host theme is not - retint marks that
+            // would otherwise vanish (white on paper, navy on ink).
+            tint = IconTheming.adapt(iconInfo.color, rowFill.compositeOver(BossDarkBackground)),
             modifier = Modifier.size(16.dp)
         )
 
