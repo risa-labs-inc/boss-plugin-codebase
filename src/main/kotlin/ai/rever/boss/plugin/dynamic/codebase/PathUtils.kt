@@ -33,6 +33,21 @@ object PathUtils {
     fun isNestedUnder(path: String, ancestor: String, separator: Char = platformSeparator): Boolean =
         path.startsWith(ancestor + separator)
 
+    /**
+     * [path] with trailing separators and stray whitespace removed.
+     *
+     * Not a normalization of the separator itself (see the class note): this only
+     * strips what a SOURCE appended. The macOS directory picker returns
+     * "/a/b/" when nothing inside b was selected, and [name] on that is "",
+     * which is how every such project ended up called "Unknown". A filesystem
+     * root keeps its single separator rather than collapsing to "".
+     */
+    fun trimTrailingSeparator(path: String, separator: Char = platformSeparator): String {
+        val trimmed = path.trim()
+        if (trimmed.length <= 1) return trimmed
+        return trimmed.trimEnd(separator).ifEmpty { separator.toString() }
+    }
+
     /** [path] relative to [root], or [path] unchanged when it isn't under root. */
     fun relativize(path: String, root: String, separator: Char = platformSeparator): String =
         if (root.isNotEmpty() && (path == root || isNestedUnder(path, root, separator))) {

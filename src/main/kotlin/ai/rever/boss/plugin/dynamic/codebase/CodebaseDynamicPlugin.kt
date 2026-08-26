@@ -60,7 +60,10 @@ class CodebaseDynamicPlugin : DynamicPlugin {
                     projectDataProvider?.selectProject(
                         ai.rever.boss.plugin.api.ProjectData(name = name, path = path)
                     )
-                }
+                },
+                // Feeds the header's project dropdown. Null on hosts without a
+                // ProjectDataProvider — the dropdown then offers only the picker.
+                recentProjects = projectDataProvider?.recentProjects
             )
         }
         // Contribute codebase_* MCP tools; auto-removed on disable/unload.

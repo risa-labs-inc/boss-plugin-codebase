@@ -3,6 +3,7 @@ package ai.rever.boss.plugin.dynamic.codebase
 import ai.rever.boss.plugin.api.ContextMenuProvider
 import ai.rever.boss.plugin.api.DirectoryPickerProvider
 import ai.rever.boss.plugin.api.FileSystemDataProvider
+import ai.rever.boss.plugin.api.ProjectData
 import ai.rever.boss.plugin.api.SplitViewOperations
 import ai.rever.boss.plugin.ui.BossDialog
 import ai.rever.boss.plugin.ui.BossTheme
@@ -55,6 +56,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 // UI chrome colors now consume reactive BOSS theme tokens so the panel
 // re-skins automatically when the host theme changes. These are thin aliases
@@ -84,7 +87,8 @@ fun CodebaseContent(
     scope: CoroutineScope,
     getWindowId: () -> String?,
     getProjectPath: () -> String?,
-    onSelectProject: ((String, String) -> Unit)?
+    onSelectProject: ((String, String) -> Unit)?,
+    recentProjects: StateFlow<List<ProjectData>>?
 ) {
     val viewModel = remember(fileSystemDataProvider, directoryPickerProvider, splitViewOperations) {
         CodebaseViewModel(
@@ -108,6 +112,14 @@ fun CodebaseContent(
     val projectPath = getProjectPath()
     val projectName = projectPath?.let { PathUtils.name(it) }?.ifEmpty { "Project" } ?: ""
     val hasProject = !projectPath.isNullOrEmpty()
+
+    // Null on hosts that expose no ProjectDataProvider: the switcher then offers
+    // only "Open Project...", which is exactly what the header did before it.
+    val recentProjectsFlow = remember(recentProjects) { recentProjects ?: MutableStateFlow(emptyList()) }
+    val recents by recentProjectsFlow.collectAsState()
+    val switcherEntries = remember(recents, projectPath) {
+        ProjectSwitcherEntries.build(recents, projectPath)
+    }
 
     val tree by viewModel.fileTree.collectAsState()
     val expandedPaths by viewModel.expandedPaths.collectAsState()
@@ -209,29 +221,21 @@ fun CodebaseContent(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.FolderOpen,
-                        contentDescription = "Project",
-                        tint = BossLinkBlue,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = projectName,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = BossThemeColors.TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    ProjectSwitcher(
+                        projectName = projectName,
+                        entries = switcherEntries,
+                        onSelect = { entry -> viewModel.selectProject(entry.name, entry.path) },
+                        onOpenProject = { viewModel.pickDirectory() },
                         modifier = Modifier.weight(1f)
                     )
                     // Hidden on host binaries that predate the showHidden
                     // overloads — the flag would be silently ignored there.
                     if (viewModel.supportsShowHidden) {
                         TooltipArea(
+                            modifier = Modifier.padding(start = 4.dp, end = 4.dp),
                             tooltip = {
                                 Surface(
                                     color = BossHeaderColor,
