@@ -90,6 +90,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
 
     testImplementation(kotlin("test"))
+    // BossLogger binds slf4j in its static init, so any test that reaches a log
+    // call dies with NoClassDefFoundError without a backend on the test runtime
+    // classpath. Same line the bookmarks plugin carries, for the same reason.
+    testRuntimeOnly("org.slf4j:slf4j-simple:2.0.18")
 }
 
 tasks.test {

@@ -5,10 +5,12 @@ import ai.rever.boss.plugin.api.DirectoryPickerProvider
 import ai.rever.boss.plugin.api.FileSystemDataProvider
 import ai.rever.boss.plugin.api.PanelComponentWithUI
 import ai.rever.boss.plugin.api.PanelInfo
+import ai.rever.boss.plugin.api.ProjectData
 import ai.rever.boss.plugin.api.SplitViewOperations
 import androidx.compose.runtime.Composable
 import com.arkivanov.decompose.ComponentContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Codebase panel component (Dynamic Plugin)
@@ -26,7 +28,8 @@ class CodebaseComponent(
     private val scope: CoroutineScope,
     private val getWindowId: () -> String?,
     private val getProjectPath: () -> String?,
-    private val onSelectProject: ((String, String) -> Unit)?
+    private val onSelectProject: ((String, String) -> Unit)?,
+    private val recentProjects: StateFlow<List<ProjectData>>?
 ) : PanelComponentWithUI, ComponentContext by ctx {
 
     @Composable
@@ -39,7 +42,8 @@ class CodebaseComponent(
             scope = scope,
             getWindowId = getWindowId,
             getProjectPath = getProjectPath,
-            onSelectProject = onSelectProject
+            onSelectProject = onSelectProject,
+            recentProjects = recentProjects
         )
     }
 }
