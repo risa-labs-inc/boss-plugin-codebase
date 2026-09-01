@@ -64,6 +64,7 @@ import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -72,6 +73,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
@@ -81,6 +85,8 @@ import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -143,8 +149,14 @@ fun CodebaseGitContent(
     var untrackedOpen by remember { mutableStateOf(true) }
     var graphOpen by remember { mutableStateOf(true) }
     var confirm by remember { mutableStateOf<GitConfirmation?>(null) }
+    // Deliberately shared across the STAGED / CHANGES / UNTRACKED groups:
+    // the same directory is the same directory on all three sides, so its
+    // collapsed state is one preference, not three.
     var collapsedDirs by remember { mutableStateOf(emptySet<String>()) }
-    val splitFraction = remember { mutableStateOf(0.55f) }
+    // In the view model, not a `remember`: the tab composable tears down on
+    // every tab hop, and a layout preference should not reset with it.
+    val splitFractionState = viewModel.splitFraction.collectAsState()
+    val splitFraction by splitFractionState
 
     val staged = remember(fileStatus) { fileStatus.filter { it.isStaged } }
     val changed = remember(fileStatus) { fileStatus.filter { it.isUnstaged && !it.isUntracked } }
@@ -252,7 +264,7 @@ fun CodebaseGitContent(
             // ── Changes over graph, split by a draggable divider ───────────
             BoxWithConstraints(modifier = Modifier.weight(1f)) {
                 val totalPx = with(LocalDensity.current) { maxHeight.toPx() }
-                val topWeight = if (graphOpen) splitFraction.value else 1f
+                val topWeight = if (graphOpen) splitFraction else 1f
                 Column(modifier = Modifier.fillMaxSize()) {
                     LazyColumn(
                         modifier = Modifier.weight(topWeight).fillMaxWidth(),
@@ -470,13 +482,13 @@ fun CodebaseGitContent(
                         },
                     )
                     if (graphOpen) {
-                        CodebaseSplitter(splitFraction, totalPx)
+                        CodebaseSplitter(splitFractionState, viewModel::setSplitFraction, totalPx)
                         GitGraphList(
                             graph = graph,
                             graphBusy = graphBusy,
                             remoteNames = remoteNames,
                             hasMore = viewModel.hasMoreGraph(),
-                            modifier = Modifier.weight((1f - splitFraction.value).coerceAtLeast(0.05f)),
+                            modifier = Modifier.weight((1f - splitFraction).coerceAtLeast(0.05f)),
                             onOpen = { viewModel.openCommitDiff(it.hash) },
                             onAction = { confirm = it },
                             viewModel = viewModel,
@@ -1066,10 +1078,16 @@ private fun GitCommitRow(
     CodebaseListRow(onClick = onClick, height = GRAPH_ROW_HEIGHT) { hovered ->
         GraphRowCanvas(row = graphRow, laneCount = laneCount)
         Spacer(Modifier.width(4.dp))
-        CodebaseTooltip(
-            "${node.shortHash}  ${node.subject}\n${node.author}",
-            modifier = Modifier.weight(1f),
-        ) {
+        // The row shows the relative age; the tooltip carries the absolute date
+    // formatCommitDate was written for.
+    val absoluteDate = formatCommitDate(node.date)
+    val tooltip =
+        if (absoluteDate.isNotEmpty()) "${node.shortHash}  ${node.subject}\n${node.author}  •  $absoluteDate"
+        else "${node.shortHash}  ${node.subject}\n${node.author}"
+    CodebaseTooltip(
+        tooltip,
+        modifier = Modifier.weight(1f),
+    ) {
             // Pills between the subject and the author, both of which give up
             // width to them: a branch head is the one thing on this row you
             // scan a graph FOR, and a long subject must not push it off the
@@ -1445,10 +1463,30 @@ private fun GitConfirmDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
+    // A modal sheet must EAT input: without a consuming pointer modifier the
+    // scrim never consumes the click, so the rows underneath stay live - with
+    // Discard and Push behind this, another row's "Discard changes" would fire
+    // while the confirmation is on screen. The Box also needs focus for the
+    // Escape handler to run: onPreviewKeyEvent on an unfocused node never
+    // fires.
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(CodebaseScrim)
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.type == PointerEventType.Press) {
+                            event.changes.forEach { it.consume() }
+                        }
+                    }
+                }
+            }
+            .focusRequester(focusRequester)
+            .focusTarget()
             .onPreviewKeyEvent { e ->
                 if (e.type == KeyEventType.KeyDown && e.key == Key.Escape) {
                     onDismiss()

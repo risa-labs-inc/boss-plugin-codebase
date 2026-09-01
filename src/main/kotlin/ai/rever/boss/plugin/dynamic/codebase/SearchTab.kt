@@ -48,11 +48,14 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -82,7 +85,9 @@ class CodebaseSearchViewModel(
     private val splitViewOperations: SplitViewOperations?,
     private val getProjectPath: () -> String? = { null },
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Blocking content-scan I/O, not CPU-bound work: Default is sized to
+    // cores and these calls would block it.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val providerOrNull: ProjectSearchProvider? get() = provider
 
@@ -198,7 +203,12 @@ class CodebaseSearchViewModel(
                 while (isActive) {
                     delay(REFRESH_MS)
                     if (_query.value.isNotBlank() && !_busy.value && searchJob?.isActive != true) {
-                        execute()
+                        // Track the refresh in searchJob like every other scan:
+                        // a clear/cancel that lands mid-scan must be able to
+                        // reach it. A direct execute() here outran both, and
+                        // the scan published the old query's results - plus
+                        // _searched - a moment after the user cleared.
+                        searchJob = scope.launch { execute() }
                     }
                 }
             }
@@ -238,6 +248,9 @@ class CodebaseSearchViewModel(
                     wholeWord = _wholeWord.value,
                     maxResults = MAX_RESULTS,
                 ) ?: emptyList()
+            // A clear or a newer query that landed mid-scan wins: publishing
+            // this result set would resurrect exactly what the clear removed.
+            if (_query.value != q) return
             _results.value = matches
             _grouped.value = groupMatchesByFile(matches)
             // Now an honest cap: the engine excluded during the walk, so hitting
@@ -245,6 +258,10 @@ class CodebaseSearchViewModel(
             // that the page was spent on files about to be filtered out.
             _capped.value = matches.size >= MAX_RESULTS
             _searched.value = true
+        } catch (e: CancellationException) {
+            // Re-throw: a cancelled scan is not a search failure, and
+            // swallowing the cancel would also leave _busy stuck true.
+            throw e
         } catch (e: Exception) {
             // An in-progress regex ("(", "[a-") throws on every keystroke;
             // report it in the status line instead of clearing the results.
@@ -905,10 +922,23 @@ private fun ConfirmReplaceSheet(
     onDismiss: () -> Unit,
     onApply: () -> Unit,
 ) {
+    // A modal sheet must EAT input: without a consuming pointer modifier the
+    // scrim never consumes the click, so the result rows underneath stay live
+    // while the confirmation is on screen.
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(CodebaseScrim),
+            .background(CodebaseScrim)
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.type == PointerEventType.Press) {
+                            event.changes.forEach { it.consume() }
+                        }
+                    }
+                }
+            },
         contentAlignment = Alignment.Center,
     ) {
         Column(

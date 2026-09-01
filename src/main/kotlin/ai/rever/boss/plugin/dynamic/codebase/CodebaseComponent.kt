@@ -53,6 +53,7 @@ import com.arkivanov.decompose.ComponentContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -140,20 +141,33 @@ class CodebaseComponent(
             // The reads are blocking I/O - and the tab-switch write below is
             // already off the UI thread, so keep this path consistent: a
             // blocking storage implementation must not stall the first frame.
-            val saved = withContext(Dispatchers.Default) { storage?.getString("codebase.tab") }
+            val saved = withContext(Dispatchers.IO) { storage?.getString("codebase.tab") }
             selectedTab = CodebaseTab.fromStorage(saved)
             // The change-group layout was a `remember` inside the GIT tab, so
             // it reset on every hop to FILES and back. It is a preference;
             // persist it beside the selected tab. Seeded BEFORE the collector
             // below starts, so the load is not immediately overwritten.
             gitViewModel.setChangeLayout(
-                withContext(Dispatchers.Default) {
+                withContext(Dispatchers.IO) {
                     GitChangeLayout.fromStorage(storage?.getString("codebase.gitLayout"))
                 },
             )
             gitViewModel.changeLayout.collect { layout ->
-                withContext(Dispatchers.Default) {
+                withContext(Dispatchers.IO) {
                     storage?.putString("codebase.gitLayout", layout.storageKey)
+                }
+            }
+            gitViewModel.setSplitFraction(
+                withContext(Dispatchers.IO) {
+                    storage?.getString("codebase.gitSplit")?.toFloatOrNull()?.coerceIn(0.15f, 0.85f)
+                        ?: 0.55f
+                },
+            )
+            // Debounced: a drag emits a value per pointer move, and each
+            // emission would be a file write without the settle delay.
+            gitViewModel.splitFraction.debounce(300).collect { fraction ->
+                withContext(Dispatchers.IO) {
+                    storage?.putString("codebase.gitSplit", fraction.toString())
                 }
             }
         }
@@ -166,7 +180,16 @@ class CodebaseComponent(
             while (true) {
                 delay(PROJECT_POLL_MS)
                 val current = getProjectPath()
-                if (current != projectPath) projectPath = current
+                if (current != projectPath) {
+                    projectPath = current
+                    // GIT and SEARCH keep per-project state: the commit graph,
+                    // branch chip and result tree all describe the project
+                    // that was active when they loaded. Reset both against
+                    // the new project instead of keeping the previous one on
+                    // screen until a manual refresh.
+                    gitViewModel.onProjectChanged()
+                    searchViewModel.clear()
+                }
             }
         }
 
@@ -174,7 +197,7 @@ class CodebaseComponent(
             CodebaseProjectHeader(projectPath)
             CodebaseTabStrip(selected = selectedTab) { tab ->
                 selectedTab = tab
-                scope.launch(Dispatchers.Default) {
+                scope.launch(Dispatchers.IO) {
                     storage?.putString("codebase.tab", tab.storageKey)
                 }
             }

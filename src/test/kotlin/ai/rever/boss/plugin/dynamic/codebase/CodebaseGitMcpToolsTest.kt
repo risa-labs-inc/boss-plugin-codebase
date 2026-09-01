@@ -135,6 +135,37 @@ class CodebaseGitMcpToolsTest {
     }
 
     @Test
+    fun `a leading-dash ref is refused before it reaches the provider`() {
+        // git_checkout / git_diff_ref / git_diff_between take an LLM-supplied
+        // ref across the plugin API; a leading dash would become a git flag.
+        listOf(
+            "git_diff_ref" to mapOf("ref" to "-n"),
+            "git_diff_between" to mapOf("from" to "main", "to" to "--all"),
+            "git_checkout" to mapOf("ref" to "-b"),
+        ).forEach { (name, args) ->
+            val result = invoke(name, args)
+            assertTrue(result.isError, name)
+            assertTrue(result.text.contains("not a usable ref"), "$name said: ${result.text}")
+        }
+    }
+
+    @Test
+    fun `a JSON array unescapes backslashes so Windows paths survive`() {
+        // The array form is the recommended carrier for awkward paths; the
+        // scanner used to append the backslash AND the escaped character, so
+        // every escape came back doubled and " stayed ".
+        invoke(
+            "project_replace",
+            mapOf(
+                "query" to "a",
+                "replacement" to "b",
+                "files" to "[\"C:\\\\Users\\\\me\\\\x.kt\", \"a\\\"b.kt\"]",
+            ),
+        )
+        assertEquals(listOf("C:\\Users\\me\\x.kt", "a\"b.kt"), search.replaceCalls.single().files)
+    }
+
+    @Test
     fun `the files argument still accepts the flat comma form`() {
         invoke(
             "project_replace",

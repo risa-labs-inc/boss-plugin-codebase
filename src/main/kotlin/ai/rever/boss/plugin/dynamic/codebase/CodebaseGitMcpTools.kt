@@ -102,6 +102,7 @@ internal class CodebaseGitMcpToolProvider(
             handler = McpToolHandler { args ->
                 val ref = args.string("ref")
                     ?: return@McpToolHandler missing("ref")
+                if (!GitBranchModel.isSafeRef(ref)) return@McpToolHandler unsafeRef(ref)
                 op("Checked out $ref", gitProvider?.checkout(ref))
             },
         ),
@@ -145,6 +146,7 @@ internal class CodebaseGitMcpToolProvider(
             handler = McpToolHandler { args ->
                 val ref = args.string("ref")
                     ?: return@McpToolHandler missing("ref")
+                if (!GitBranchModel.isSafeRef(ref)) return@McpToolHandler unsafeRef(ref)
                 diffTexts(gitProvider?.diffRef(ref, args.string("path")).orEmpty())
             },
         ),
@@ -157,8 +159,10 @@ internal class CodebaseGitMcpToolProvider(
             handler = McpToolHandler { args ->
                 val from = args.string("from")
                     ?: return@McpToolHandler missing("from")
+                if (!GitBranchModel.isSafeRef(from)) return@McpToolHandler unsafeRef(from)
                 val to = args.string("to")
                     ?: return@McpToolHandler missing("to")
+                if (!GitBranchModel.isSafeRef(to)) return@McpToolHandler unsafeRef(to)
                 diffTexts(gitProvider?.diffBetween(from, to, args.string("path")).orEmpty())
             },
         ),
@@ -231,6 +235,7 @@ internal class CodebaseGitMcpToolProvider(
             provider.searchInProject(
                 query = query,
                 pathPattern = args.string("pathPattern"),
+                excludePattern = args.string("excludePattern"),
                 isRegex = args.boolean("isRegex") ?: false,
                 caseSensitive = args.boolean("caseSensitive") ?: false,
                 wholeWord = args.boolean("wholeWord") ?: false,
@@ -294,39 +299,59 @@ internal class CodebaseGitMcpToolProvider(
     }
 
     /**
-     * Strict scan of `["a", "b, c", ...]`: double-quoted elements, backslash
-     * escapes, commas only between elements. Returns null for anything else
-     * (nesting, bare tokens, unbalanced quotes) so the caller falls back to the
-     * flat form rather than guessing at a partial parse.
+     * Strict scan of `["a", "b, c", ...]`: double-quoted elements with
+     * proper JSON unescaping, commas only between elements. Returns null
+     * for anything else (nesting, bare tokens, unbalanced quotes, unknown
+     * escape) so the caller falls back to the flat form rather than
+     * guessing at a partial parse.
+     *
+     * Unescaping matters for the main use case: the array form is the
+     * recommended carrier for awkward paths, and `["C:\\Users\\x.kt"]`
+     * must come back as `C:\Users\x.kt`, not with doubled backslashes.
      */
     private fun parseJsonStringArray(text: String): List<String>? {
         val body = text.substring(1, text.length - 1)
         val items = mutableListOf<String>()
         val current = StringBuilder()
         var inString = false
-        var escaped = false
-        for (c in body) {
+        var i = 0
+        while (i < body.length) {
+            val c = body[i]
             when {
-                escaped -> {
-                    current.append(c)
-                    escaped = false
-                }
                 inString && c == '\\' -> {
-                    current.append(c)
-                    escaped = true
+                    i++
+                    if (i >= body.length) return null
+                    when (val esc = body[i]) {
+                        '"' -> current.append('"')
+                        '\\' -> current.append('\\')
+                        '/' -> current.append('/')
+                        'n' -> current.append('\n')
+                        't' -> current.append('\t')
+                        'r' -> current.append('\r')
+                        'b' -> current.append('\b')
+                        'f' -> current.append(0x0C.toChar())
+                        'u' -> {
+                            if (i + 4 >= body.length) return null
+                            val code = body.substring(i + 1, i + 5).toIntOrNull(16) ?: return null
+                            current.append(code.toChar())
+                            i += 4
+                        }
+                        else -> return null
+                    }
                 }
                 c == '"' -> inString = !inString
                 c == ',' && !inString -> {
-                    items += current.toString().trim().removeSurrounding("\"")
+                    items += current.toString().trim()
                     current.clear()
                 }
                 !inString && c.isWhitespace() -> Unit
                 inString -> current.append(c)
                 else -> return null
             }
+            i++
         }
-        if (inString || escaped) return null
-        items += current.toString().trim().removeSurrounding("\"")
+        if (inString) return null
+        items += current.toString().trim()
         return if (items.all { it.isNotEmpty() }) items else null
     }
 
@@ -444,6 +469,15 @@ internal class CodebaseGitMcpToolProvider(
 
     private fun missing(name: String): McpToolResult = McpToolResult("Missing required argument: $name", isError = true)
 
+    /**
+     * LLM-supplied refs cross the plugin API, just like the graph picker's
+     * branch name: the UI path checks [GitBranchModel.isSafeRef] precisely
+     * because of that, and the MCP path must too. A leading dash would
+     * become a git flag, and control characters do not survive IPC.
+     */
+    private fun unsafeRef(ref: String): McpToolResult =
+        McpToolResult("Failed: \"$ref\" is not a usable ref (no blank, leading dash, or control characters).", isError = true)
+
     private fun McpToolArgs.path(): String? = string("path")
 
     private fun McpToolArgs.hash(): String? = string("hash")
@@ -482,7 +516,7 @@ internal class CodebaseGitMcpToolProvider(
         const val DIFF_BETWEEN_SCHEMA =
             """{"type":"object","properties":{"from":{"type":"string","description":"Source ref."},"to":{"type":"string","description":"Target ref."},"path":{"type":"string","description":"Optional single file to restrict to."}},"required":["from","to"]}"""
         const val SEARCH_SCHEMA =
-            """{"type":"object","properties":{"query":{"type":"string","description":"Literal text, or a regular expression when isRegex=true."},"pathPattern":{"type":"string","description":"Optional glob filter on the project-relative path (e.g. **/*.kt)."},"isRegex":{"type":"boolean","description":"Treat query as a regular expression (default false)."},"caseSensitive":{"type":"boolean","description":"Case-sensitive matching (default false)."},"wholeWord":{"type":"boolean","description":"Whole-word match only (default false)."},"maxResults":{"type":"integer","description":"Hard cap on returned matches (default 100)."}},"required":["query"]}"""
+            """{"type":"object","properties":{"query":{"type":"string","description":"Literal text, or a regular expression when isRegex=true."},"pathPattern":{"type":"string","description":"Optional glob filter on the project-relative path (e.g. **/*.kt)."},"excludePattern":{"type":"string","description":"Optional glob filter for paths to EXCLUDE (e.g. **/build/**). Applied inside the engine, so excluded matches do not consume the maxResults cap."},"isRegex":{"type":"boolean","description":"Treat query as a regular expression (default false)."},"caseSensitive":{"type":"boolean","description":"Case-sensitive matching (default false)."},"wholeWord":{"type":"boolean","description":"Whole-word match only (default false)."},"maxResults":{"type":"integer","description":"Hard cap on returned matches (default 100)."}},"required":["query"]}"""
         const val REPLACE_SCHEMA =
             """{"type":"object","properties":{"query":{"type":"string","description":"Literal text, or a regular expression when isRegex=true."},"replacement":{"type":"string","description":"Replacement text; ${'$'}1..${'$'}9 capture references for regex queries."},"files":{"type":"string","description":"Comma-separated file paths to touch, or a JSON array of path strings - use the array form when a path contains a comma. Project-relative, or absolute inside the project. Paths outside the project are refused. Never empty."},"isRegex":{"type":"boolean","description":"Treat query as a regular expression (default false)."},"caseSensitive":{"type":"boolean","description":"Case-sensitive matching (default false)."},"wholeWord":{"type":"boolean","description":"Whole-word match only (default false)."},"dryRun":{"type":"boolean","description":"Count without writing (default true)."}},"required":["query","replacement","files"]}"""
     }

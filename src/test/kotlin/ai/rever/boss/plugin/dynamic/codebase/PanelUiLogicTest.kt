@@ -155,11 +155,17 @@ class PanelUiLogicTest {
 
     @Test
     fun `the branch list folds remote refs onto their local name`() {
+        // Folding follows the repository's real remote set, not a hardcoded
+        // "origin": upstream/x folds when the repo has an upstream remote,
+        // and a local someone/something never does.
         val branches =
             CodebaseGitViewModel.branchesOf(
-                listOf(node(listOf("HEAD -> feat/x", "origin/feat/x", "tag: v1", "main", "HEAD"))),
+                listOf(
+                    node(listOf("HEAD -> feat/x", "origin/feat/x", "tag: v1", "main", "HEAD", "upstream/feat/x", "someone/something")),
+                ),
+                setOf("origin", "upstream"),
             )
-        assertEquals(listOf("feat/x", "main"), branches)
+        assertEquals(listOf("feat/x", "main", "someone/something"), branches)
     }
 
     @Test

@@ -11,10 +11,11 @@ import ai.rever.boss.plugin.api.GitFileStatusData
  */
 object AgentReviewPrompt {
 
-    /** Inline diffs up to this many characters; above it, list the files and
-     * point the agent at the git_diff tools instead (keeps the prompt bounded).
-     */
+    /** Character budget the caller passes to the diff collector. */
     const val INLINE_DIFF_BUDGET = 15_000
+
+    /** Marker the diff collector appends when a block had to be sliced. */
+    const val TRUNCATION_MARKER = "… [truncated]"
 
     fun build(
         projectPath: String,
@@ -77,12 +78,16 @@ object AgentReviewPrompt {
 
         if (diffText.isNullOrBlank()) {
             sb.appendLine("The diff could not be fetched inline; use the git_diff / git_diff_all tools to read it.")
-        } else if (diffText.length >= INLINE_DIFF_BUDGET) {
-            sb.appendLine(
-                "The full diff exceeds the inline budget (${diffText.length} chars); " +
-                    "use the git_diff / git_diff_ref tools to read the individual file diffs.",
-            )
         } else {
+            // Inline whatever the caller budgeted - do NOT re-test against
+            // INLINE_DIFF_BUDGET here. The collector truncates to fit but then
+            // appends a per-file header and the marker, so a truncated result
+            // lands a few characters OVER the budget. Re-testing would replace
+            // that text with a tool pointer and drop the diff exactly in the
+            // case the truncation exists to serve: one oversized file.
+            if (diffText.contains(TRUNCATION_MARKER)) {
+                sb.appendLine("(diff truncated to the inline budget; use the git_diff / git_diff_ref tools for the rest)")
+            }
             sb.appendLine("Full diff:")
             sb.appendLine("```diff")
             sb.appendLine(diffText)

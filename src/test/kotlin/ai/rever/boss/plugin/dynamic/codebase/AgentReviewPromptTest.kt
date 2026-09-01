@@ -3,7 +3,6 @@ package ai.rever.boss.plugin.dynamic.codebase
 import ai.rever.boss.plugin.api.GitFileStatusData
 import ai.rever.boss.plugin.api.GitFileStatusTypeData
 import kotlin.test.Test
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** Pins the review brief the Atlas agent receives. */
@@ -38,11 +37,16 @@ class AgentReviewPromptTest {
     }
 
     @Test
-    fun `diff over the budget is replaced by tool instructions`() {
-        val diff = "x".repeat(AgentReviewPrompt.INLINE_DIFF_BUDGET + 1)
+    fun `a truncated diff is inlined with a note, not dropped`() {
+        // The collector truncates to fit and then appends its own header and
+        // marker, so a truncated result can land slightly OVER the budget.
+        // The old length test replaced it with tool instructions - dropping
+        // the diff exactly in the case the truncation exists to serve.
+        val diff = "x".repeat(AgentReviewPrompt.INLINE_DIFF_BUDGET + 1) + "\n" + AgentReviewPrompt.TRUNCATION_MARKER + "\n"
         val unstaged = listOf(status("big.txt", false, GitFileStatusTypeData.MODIFIED))
         val prompt = AgentReviewPrompt.build("/p", emptyList(), unstaged, diff)
-        assertFalse(diff in prompt, "the over-budget diff must not be inlined")
+        assertTrue(diff in prompt, "the truncated diff must still be inlined")
+        assertTrue("truncated" in prompt)
         assertTrue("git_diff" in prompt)
         assertTrue("[MODIFIED] big.txt" in prompt)
     }

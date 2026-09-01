@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.Icon
-import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Surface
 import androidx.compose.material.Text
 import androidx.compose.material.icons.Icons
@@ -59,7 +58,7 @@ import androidx.compose.ui.unit.sp
 import ai.rever.boss.plugin.ui.BossColors
 import ai.rever.boss.plugin.ui.BossThemeColors
 import androidx.compose.foundation.clickable
-import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import java.awt.Cursor
 
@@ -597,11 +596,13 @@ fun CodebaseToggleChip(
 /**
  * A draggable horizontal splitter. [fraction] is the top pane's share of the
  * available height, clamped to [min]..[max] so neither pane can be dragged
- * away entirely.
+ * away entirely. [onChanged] carries each new fraction to the owner, which
+ * owns persistence - the splitter itself is stateless.
  */
 @Composable
 fun CodebaseSplitter(
-    fraction: MutableState<Float>,
+    fraction: State<Float>,
+    onChanged: (Float) -> Unit,
     totalHeightPx: Float,
     min: Float = 0.15f,
     max: Float = 0.85f,
@@ -618,7 +619,7 @@ fun CodebaseSplitter(
                 detectDragGestures { _, dragAmount ->
                     if (totalHeightPx <= 0f) return@detectDragGestures
                     val next = fraction.value + dragAmount.y / totalHeightPx
-                    fraction.value = next.coerceIn(min, max)
+                    onChanged(next.coerceIn(min, max))
                 }
             },
         contentAlignment = Alignment.Center,
@@ -671,6 +672,10 @@ fun CodebaseEmptyState(
  * name reads at full contrast, its directory trails behind it muted.
  */
 internal fun splitPathForDisplay(path: String): Pair<String, String> {
-    val idx = path.lastIndexOf('/')
+    // The provider's paths are project-relative POSIX today, but the display
+    // split must not assume that forever: take the LAST separator of either
+    // family, so a Windows path ever arriving here still renders its file
+    // name, not the whole path.
+    val idx = maxOf(path.lastIndexOf('/'), path.lastIndexOf('\\'))
     return if (idx < 0) path to "" else path.substring(idx + 1) to path.substring(0, idx)
 }

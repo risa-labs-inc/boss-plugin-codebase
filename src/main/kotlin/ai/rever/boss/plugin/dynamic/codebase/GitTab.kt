@@ -46,7 +46,9 @@ class CodebaseGitViewModel(
     /** Why AI is unavailable, or null when it is ready. */
     private val aiUnavailable: () -> String? = { null },
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Blocking git/IPC and storage I/O, not CPU-bound work: Default is
+    // sized to cores and these calls would block it.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val providerOrNull: GitDataProvider? get() = git
 
@@ -113,6 +115,21 @@ class CodebaseGitViewModel(
 
     fun toggleChangeLayout() {
         _changeLayout.value = _changeLayout.value.toggled()
+    }
+
+    /**
+     * Splitter position: the top pane's share of the graph/changes split.
+     *
+     * Same reason as [changeLayout]: a `remember` inside the tab resets on
+     * every hop to FILES and back, and this is the user's layout, not an
+     * accident of composition. The splitter clamps to 0.15..0.85; the setter
+     * re-clamps so a future caller cannot pin a pane at zero.
+     */
+    private val _splitFraction = MutableStateFlow(0.55f)
+    val splitFraction: StateFlow<Float> = _splitFraction.asStateFlow()
+
+    fun setSplitFraction(value: Float) {
+        _splitFraction.value = value.coerceIn(0.15f, 0.85f)
     }
 
     // ---- agent review options ----
@@ -260,6 +277,21 @@ class CodebaseGitViewModel(
         statusTimer = null
     }
 
+    fun onProjectChanged() {
+        if (git == null) return
+        // Everything loaded in init describes the repository that was active
+        // THEN. Reset the stale parts and re-read the new project now, rather
+        // than leaving the graph, branch chip and change groups of the old
+        // project on screen until someone hits refresh.
+        _currentBranch.value = ""
+        _branchOptions.value = emptyList()
+        _graph.value = emptyList()
+        _graphRef.value = null
+        _reviewBase.value = ""
+        refreshStatus()
+        loadGraph(reset = true)
+    }
+
     fun loadGraph(reset: Boolean = false) {
         scope.launch {
             _graphBusy.value = true
@@ -291,7 +323,7 @@ class CodebaseGitViewModel(
                     branchOf(nodes).takeIf { it.isNotEmpty() }?.let { _currentBranch.value = it }
                 }
                 _graph.value = nodes
-                val found = branchesOf(nodes)
+                val found = branchesOf(nodes, _remoteNames.value)
                 _branches.value = found
                 if (_reviewBase.value.isBlank()) {
                     _reviewBase.value = defaultBase(found, _currentBranch.value)
@@ -600,8 +632,19 @@ class CodebaseGitViewModel(
             // bounds real content instead of context padding.
             val block = compactDiff(diff).ifBlank { continue }
             if (sb.isNotEmpty() && sb.length + block.length > budget) break
-            val remaining = budget - sb.length
-            val slice = if (block.length > remaining) block.take(remaining) + "\n… [truncated]\n" else block
+            // Reserve the per-file header and the truncation marker, so the
+            // framing never pushes the result past [budget]: the prompt
+            // builder used to treat an over-budget result as "too large" and
+            // drop it, which voided the truncation exactly when one happened.
+            val frame = "--- ${f.path}\n".length + AgentReviewPrompt.TRUNCATION_MARKER.length + 2
+            if (sb.length + frame >= budget) break
+            val remaining = budget - sb.length - frame
+            val slice =
+                if (block.length > remaining) {
+                    block.take(remaining) + "\n" + AgentReviewPrompt.TRUNCATION_MARKER + "\n"
+                } else {
+                    block
+                }
             sb.append("--- ").append(f.path).append('\n').append(slice).append('\n')
         }
         return sb.toString()
@@ -740,15 +783,25 @@ class CodebaseGitViewModel(
 
         /**
          * Every branch named in a graph's ref decorations, de-duplicated and
-         * with remote copies folded onto their local name.
+         * with remote copies folded onto their local name. [remoteNames] is
+         * the repository's real remote set (not a hardcoded "origin"): a
+         * clone from `upstream/feat/x` folds too, while a local branch that
+         * merely looks like `someone/something` does not.
          */
-        internal fun branchesOf(nodes: List<GitCommitNodeData>): List<String> =
+        internal fun branchesOf(nodes: List<GitCommitNodeData>, remoteNames: Set<String>): List<String> =
             nodes
                 .asSequence()
                 .flatMap { it.refs.asSequence() }
                 .map { it.removePrefix("HEAD ->").trim() }
                 .filterNot { it.isBlank() || it == "HEAD" || it.startsWith("tag:") }
-                .map { ref -> ref.substringAfter('/', ref).takeIf { ref.startsWith("origin/") } ?: ref }
+                .map { ref ->
+                    val slash = ref.indexOf('/')
+                    if (slash in 1 until ref.length && ref.substring(0, slash) in remoteNames) {
+                        ref.substring(slash + 1)
+                    } else {
+                        ref
+                    }
+                }
                 .distinct()
                 .sorted()
                 .toList()
