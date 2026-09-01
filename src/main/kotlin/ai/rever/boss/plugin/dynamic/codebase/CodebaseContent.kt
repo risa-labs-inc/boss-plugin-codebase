@@ -48,6 +48,7 @@ import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -68,7 +69,7 @@ private val BossLinkBlue: Color get() = BossThemeColors.AccentColor
 private val BossErrorRed: Color get() = BossThemeColors.ErrorColor
 private val BossTextColor: Color get() = BossThemeColors.TextPrimary
 // Empty-space sizing assumes every visible tree/status row uses this height.
-private val TreeRowHeight = 26.dp
+private val TreeRowHeight = CodebaseMetrics.RowHeight
 
 /**
  * Main content composable for the Codebase panel.
@@ -200,30 +201,24 @@ fun CodebaseContent(
                 }
             }
         } else {
-            // Header with project info
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = BossHeaderColor,
-                elevation = 1.dp
+            // Section header. The project is named once, by the panel's own
+            // header above the tab strip - repeating it here (at 14.sp, in a
+            // second elevated bar) gave the panel two competing titles.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(CodebaseMetrics.SectionHeaderHeight + 4.dp)
+                    .padding(horizontal = CodebaseMetrics.Gutter),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.FolderOpen,
-                        contentDescription = "Project",
-                        tint = BossLinkBlue,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
+                run {
                     Text(
-                        text = projectName,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = BossThemeColors.TextPrimary,
+                        text = "EXPLORER",
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 1.0.sp,
+                        color = BossThemeColors.TextSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
@@ -268,7 +263,7 @@ fun CodebaseContent(
                 }
             }
 
-            Divider(color = BossDarkBorder)
+            CodebaseHRule()
 
             // File tree, fully virtualized: the visible tree is flattened into
             // one LazyColumn item per row (issue #8), so deep expanded subtrees

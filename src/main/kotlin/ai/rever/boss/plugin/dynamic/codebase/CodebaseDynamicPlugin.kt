@@ -1,26 +1,34 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
+import ai.rever.boss.plugin.api.AiAvailability
+import ai.rever.boss.plugin.api.AiGatewayAPI
+import ai.rever.boss.plugin.api.AiReadiness
 import ai.rever.boss.plugin.api.ContextMenuProvider
+import ai.rever.boss.plugin.api.CustomPluginEvent
 import ai.rever.boss.plugin.api.DirectoryPickerProvider
 import ai.rever.boss.plugin.api.DynamicPlugin
 import ai.rever.boss.plugin.api.FileSystemDataProvider
+import ai.rever.boss.plugin.api.PanelId
 import ai.rever.boss.plugin.api.PluginContext
 import ai.rever.boss.plugin.api.ProjectDataProvider
 import ai.rever.boss.plugin.api.SplitViewOperations
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 /**
  * Codebase dynamic plugin - Loaded from external JAR.
  *
- * Browse and explore project files with tree view navigation.
- * Features context menus for file operations: create, rename, delete, copy path, reveal in Finder.
- * Ported from bundled plugin v8.16.22 with exact UI parity.
+ * P7: FILES/SEARCH/GIT tab panel (Cursor-style). FILES is the original file
+ * tree; SEARCH is global search & replace (absorbed from the retired
+ * search-replace plugin); GIT is the changes accordion + lane graph + Agent
+ * Review (absorbed from the retired git-status/git-log plugins). All 16
+ * git_* / project_* MCP tools now register from this plugin.
  */
 class CodebaseDynamicPlugin : DynamicPlugin {
     override val pluginId: String = "ai.rever.boss.plugin.dynamic.codebase"
     override val displayName: String = "Codebase (Dynamic)"
-    override val version: String = "1.0.9"
-    override val description: String = "Browse and explore project files"
+    override val version: String = "1.6.0"
+    override val description: String = "Files, search & replace, and git status/log/graph for the current project"
     override val author: String = "Risa Labs"
     override val url: String = "https://github.com/risa-labs-inc/boss-plugin-codebase"
 
@@ -29,29 +37,86 @@ class CodebaseDynamicPlugin : DynamicPlugin {
     private var directoryPickerProvider: DirectoryPickerProvider? = null
     private var splitViewOperations: SplitViewOperations? = null
     private var projectDataProvider: ProjectDataProvider? = null
+    private var gitDataProvider: ai.rever.boss.plugin.api.GitDataProvider? = null
+    private var searchProvider: ai.rever.boss.plugin.api.ProjectSearchProvider? = null
     private var pluginScope: CoroutineScope? = null
     private var getWindowId: () -> String? = { null }
     private var getProjectPath: () -> String? = { null }
+    private var publishReview: (prompt: String) -> Unit = { _ -> }
+
+    /** Kept so AI availability can be re-checked per action, not cached at load. */
+    private var pluginContext: PluginContext? = null
 
     override fun register(context: PluginContext) {
+        pluginContext = context
         // Capture providers from context
         fileSystemDataProvider = context.fileSystemDataProvider
         contextMenuProvider = context.contextMenuProvider
         directoryPickerProvider = context.directoryPickerProvider
         splitViewOperations = context.splitViewOperations
         projectDataProvider = context.projectDataProvider
+        gitDataProvider = context.gitDataProvider
+        searchProvider = context.projectSearchProvider
         pluginScope = context.pluginScope
         getWindowId = { context.windowId }
         getProjectPath = { context.projectPath }
+
+        val storage = context.pluginStorageFactory?.createStorage(pluginId)
+
+        // Agent Review wiring: publish the event the fluck-agent (Atlas)
+        // listens for, then raise/focus its panel.
+        val eventBus = context.applicationEventBus
+        val panelEvents = context.panelEventProvider
+        // autoStart is always true: the button IS the request to run the
+        // review. It used to carry a persisted preference that no control
+        // ever set, so a stored `false` (codebase.reviewAutoStart) left every
+        // click merely typing the brief into the agent's composer, with no
+        // way back. The key is now ignored.
+        publishReview = { prompt ->
+            eventBus?.publish(
+                CustomPluginEvent(
+                    sourcePluginId = pluginId,
+                    eventName = EVENT_ATLAS_REVIEW,
+                    payload = mapOf(
+                        "prompt" to prompt,
+                        "projectPath" to (getProjectPath().orEmpty()),
+                        "autoStart" to true,
+                    ),
+                ),
+            )
+            val window = getWindowId().orEmpty()
+            pluginScope?.launch {
+                panelEvents?.openPanel(PanelId("atlas", 16), window)
+            }
+        }
 
         context.panelRegistry.registerPanel(CodebaseInfo) { ctx, panelInfo ->
             CodebaseComponent(
                 ctx = ctx,
                 panelInfo = panelInfo,
+                // Resolved per call, never cached: plugin load order is not
+                // guaranteed, so a null now may be a gateway that has simply
+                // not registered yet.
+                aiGateway = { pluginContext?.getPluginAPI(AiGatewayAPI::class.java) },
+                // The readiness -> message mapping lives in
+                // AiUnavailableMessage, not inline: it returns null for the
+                // HAPPY path, and an elvis operator here treated that null as
+                // "no plugin context" and reported a perfectly configured
+                // gateway as "AI is unavailable on this host."
+                aiUnavailable = {
+                    AiUnavailableMessage.of(pluginContext?.let { AiAvailability.check(it) })
+                },
                 fileSystemDataProvider = fileSystemDataProvider,
                 contextMenuProvider = contextMenuProvider,
                 directoryPickerProvider = directoryPickerProvider,
                 splitViewOperations = splitViewOperations,
+                gitDataProvider = gitDataProvider,
+                searchProvider = searchProvider,
+                storage = storage,
+                onAgentReview = { prompt ->
+                    pluginScope?.launch { publishReview(prompt) }
+                        ?: publishReview(prompt)
+                },
                 scope = pluginScope ?: error("Plugin scope not available"),
                 getWindowId = getWindowId,
                 getProjectPath = getProjectPath,
@@ -73,5 +138,48 @@ class CodebaseDynamicPlugin : DynamicPlugin {
                 getProjectPath = getProjectPath,
             )
         )
+        // P7: the git_* / project_* tools absorbed from the retired
+        // git-status, git-log and search-replace plugins. A distinct provider
+        // id - the registry keys providers by id, and a same-id re-registration
+        // would replace the codebase_* tools above.
+        context.registerMcpToolProvider(
+            CodebaseGitMcpToolProvider(
+                providerId = "$pluginId.git",
+                gitProvider = gitDataProvider,
+                searchProvider = searchProvider,
+            )
+        )
     }
+
+    companion object {
+        const val EVENT_ATLAS_REVIEW = "atlas.review"
+    }
+}
+
+/**
+ * Why AI is unavailable, or null when it is ready.
+ *
+ * Its own object because the contract - null means EVERYTHING IS FINE - is
+ * the shape that invites `?:`. Written inline, `context?.let { …READY -> null… }
+ * ?: "AI is unavailable on this host."` reported a working gateway as broken,
+ * because elvis cannot tell "the let returned null" from "there was no
+ * context". Only a null [readiness], i.e. no plugin context at all, is
+ * unavailability here.
+ */
+internal object AiUnavailableMessage {
+
+    const val NO_HOST = "AI is unavailable on this host."
+    const val NO_GATEWAY = "The AI Gateway plugin is not loaded. Install or enable it in the Toolbox."
+    const val NO_PROVIDER = "No AI model selected. Pick a provider or a CLI engine in the AI Gateway."
+
+    /** @param readiness null when there is no plugin context to ask. */
+    fun of(readiness: AiReadiness?): String? =
+        when (readiness) {
+            null -> NO_HOST
+            AiReadiness.READY -> null
+            AiReadiness.GATEWAY_MISSING -> NO_GATEWAY
+            // AiReadiness is documented as an open set; anything new reads as
+            // "configure a provider", which is the likelier of the two fixes.
+            else -> NO_PROVIDER
+        }
 }

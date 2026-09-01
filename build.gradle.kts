@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "ai.rever.boss.plugin.dynamic"
-version = "1.5.8"
+version = "1.6.0"
 
 java {
     toolchain {
@@ -118,6 +118,10 @@ tasks.register<Jar>("buildPluginJar") {
 
 // Sync version from build.gradle.kts into plugin.json (single source of truth)
 tasks.processResources {
+    // The filter rewrites the manifest version at execution time; declaring the
+    // version as an input makes a version bump re-run the task. Without this the
+    // processed manifest stays UP-TO-DATE and the new jar carries the old version.
+    inputs.property("pluginVersion", version)
     filesMatching("**/plugin.json") {
         filter { line ->
             line.replace(Regex(""""version"\s*:\s*"[^"]*""""), """"version": "\$version"""")
