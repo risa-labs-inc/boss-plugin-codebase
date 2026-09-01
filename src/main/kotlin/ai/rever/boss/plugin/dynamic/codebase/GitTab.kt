@@ -65,6 +65,9 @@ class CodebaseGitViewModel(
     private val _graphBusy = MutableStateFlow(false)
     val graphBusy: StateFlow<Boolean> = _graphBusy.asStateFlow()
 
+    /** Latched once a load returns fewer commits than it requested. See [hasMoreGraph]. */
+    private val _graphExhausted = MutableStateFlow(false)
+
     /**
      * The ref the graph is showing, or null for the checked-out branch.
      *
@@ -144,10 +147,14 @@ class CodebaseGitViewModel(
     val reviewBase: StateFlow<String> = _reviewBase.asStateFlow()
 
     /**
-     * Branches offered in "Diff Against...", read off the loaded graph's ref
-     * decorations. The provider exposes no branch list, and the refs already
-     * carry every branch that appears in the history the panel has - which is
-     * the set worth reviewing against.
+     * Branches offered in "Diff against…".
+     *
+     * The repository's real branch list when the host has
+     * [GitDataProvider.branches], and the loaded graph's `%D` decorations
+     * otherwise. The decorations only name branches whose tip happens to sit
+     * inside the fetched window of history, so on their own they are strictly
+     * smaller than the set worth reviewing against - a fallback, not the
+     * source.
      */
     private val _branches = MutableStateFlow<List<String>>(emptyList())
     val branches: StateFlow<List<String>> = _branches.asStateFlow()
@@ -232,7 +239,17 @@ class CodebaseGitViewModel(
         scope.launch {
             try {
                 git?.refreshStatus()
-                _noRepoHint.value = describeMissingRepo(getProjectPath())
+                // Only when there is no repository. describeMissingRepo lists the
+                // project root and stats up to CHILD_SCAN_LIMIT children looking
+                // for nested .git dirs - blocking work for a hint the normal case
+                // never renders.
+                _noRepoHint.value =
+                    if (isGitRepository.value) "" else describeMissingRepo(getProjectPath())
+            } catch (e: Exception) {
+                // The one provider call here used to have no catch, so an IPC
+                // drop escaped the launch to the thread's uncaught handler and
+                // left the hint stale. Everything else in this class reports.
+                _message.value = "Failed to read git status: ${e.message ?: e::class.simpleName}"
             } finally {
                 _loaded.value = true
             }
@@ -304,12 +321,14 @@ class CodebaseGitViewModel(
                 // delegates to logGraph for a null ref, so on a host that
                 // predates 1.0.90 the checked-out history still draws and only
                 // the picker degrades.
+                var failed = false
                 val nodes =
                     runCatching { git?.logGraphFor(ref, limit) }.getOrElse { e ->
                         // A throwing provider (IPC drop, repo mid-rebase) leaves a
                         // message instead of an unhandled exception and a spinner
                         // that just stops.
                         _message.value = "Failed to load git history: ${e.message}"
+                        failed = true
                         null
                     } ?: emptyList()
                 // The HEAD decoration only names the checked-out branch while
@@ -322,12 +341,14 @@ class CodebaseGitViewModel(
                 if (ref == null) {
                     branchOf(nodes).takeIf { it.isNotEmpty() }?.let { _currentBranch.value = it }
                 }
+                // Fewer rows than requested means the provider reached the root
+                // commit; anything else would page forever over the same list.
+                // Never latched off a FAILED load: that path yields an empty
+                // list too, and hiding "Load more" until the next reset is the
+                // wrong answer to a dropped IPC call.
+                if (!failed) _graphExhausted.value = nodes.size < limit
                 _graph.value = nodes
-                val found = branchesOf(nodes, _remoteNames.value)
-                _branches.value = found
-                if (_reviewBase.value.isBlank()) {
-                    _reviewBase.value = defaultBase(found, _currentBranch.value)
-                }
+                refreshReviewBases(nodes)
                 // Only on a reset: paging deeper into the same history cannot
                 // change which branches exist, and this is two extra `git
                 // branch` invocations behind a lock every "Load more" would
@@ -362,6 +383,24 @@ class CodebaseGitViewModel(
                 graphRefs = GitBranchModel.branchRefsInGraph(_graph.value, _remoteNames.value),
                 current = _currentBranch.value,
             )
+        // The authoritative list just arrived; rebuild the review picker off
+        // it rather than leaving the graph-derived fallback in place.
+        refreshReviewBases(_graph.value)
+    }
+
+    /**
+     * Rebuild the "Diff against…" options, preferring the repository's real
+     * branch list over the graph's ref decorations, and seed the base with
+     * main/master the first time it lands.
+     */
+    private fun refreshReviewBases(nodes: List<GitCommitNodeData>) {
+        val found =
+            GitBranchModel.reviewBases(_branchRefs.value, _remoteNames.value)
+                .ifEmpty { branchesOf(nodes, _remoteNames.value) }
+        _branches.value = found
+        if (_reviewBase.value.isBlank()) {
+            _reviewBase.value = defaultBase(found, _currentBranch.value)
+        }
     }
 
     /**
@@ -402,7 +441,16 @@ class CodebaseGitViewModel(
      */
     fun push() = op(refreshGraph = true) { git?.push() }
 
-    fun hasMoreGraph(): Boolean = _graph.value.size < GRAPH_MAX
+    /**
+     * Whether "Load more" has anything left to load.
+     *
+     * Not `size < GRAPH_MAX`: a 12-commit repository is under the ceiling
+     * forever, so the action showed on every repository smaller than 200
+     * commits and each click refetched the same rows. The latch below is set
+     * when a load comes back with fewer commits than it asked for, which is
+     * the only signal the provider gives that history ran out.
+     */
+    fun hasMoreGraph(): Boolean = !_graphExhausted.value && _graph.value.size < GRAPH_MAX
 
     // ---- row / commit operations ----
 
@@ -468,9 +516,9 @@ class CodebaseGitViewModel(
             _message.value = "Git is unavailable on this host."
             return
         }
+        if (!_busy.compareAndSet(expect = false, update = true)) return
+        _message.value = null
         scope.launch {
-            _busy.value = true
-            _message.value = null
             try {
                 if (stageFirst) {
                     val staged = git.stageAll()
@@ -537,9 +585,9 @@ class CodebaseGitViewModel(
                 _message.value = "AI is unavailable."
                 return
             }
+        if (!_generating.compareAndSet(expect = false, update = true)) return
+        _message.value = null
         scope.launch {
-            _generating.value = true
-            _message.value = null
             try {
                 val status = _fileStatus.value
                 val subject = status.filter { it.isStaged }.ifEmpty { status.filter { it.isUnstaged } }
@@ -655,8 +703,8 @@ class CodebaseGitViewModel(
      * the inline budget, then hand the composed prompt to [onAgentReview].
      */
     fun startAgentReview() {
+        if (!_busy.compareAndSet(expect = false, update = true)) return
         scope.launch {
-            _busy.value = true
             try {
                 val status = _fileStatus.value
                 val staged = status.filter { it.isStaged }
@@ -711,9 +759,13 @@ class CodebaseGitViewModel(
             _message.value = "Git is unavailable on this host."
             return
         }
+        // Set BEFORE launch. Inside the coroutine body it is set only once the
+        // dispatcher runs it, so two clicks landing in the same frame both saw
+        // busy = false and both passed the `enabled = !busy` guard - two
+        // concurrent index writes, which is what batch() exists to avoid.
+        if (!_busy.compareAndSet(expect = false, update = true)) return
+        _message.value = null
         scope.launch {
-            _busy.value = true
-            _message.value = null
             try {
                 try {
                     report(block()) { if (refreshGraph) loadGraph(reset = true) }

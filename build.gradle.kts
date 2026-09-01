@@ -121,10 +121,18 @@ tasks.processResources {
     // The filter rewrites the manifest version at execution time; declaring the
     // version as an input makes a version bump re-run the task. Without this the
     // processed manifest stays UP-TO-DATE and the new jar carries the old version.
-    inputs.property("pluginVersion", version)
+    val pluginVersion = version.toString()
+    inputs.property("pluginVersion", pluginVersion)
     filesMatching("**/plugin.json") {
         filter { line ->
-            line.replace(Regex(""""version"\s*:\s*"[^"]*""""), """"version": "\$version"""")
+            // The LAMBDA overload of replace, so the replacement is used
+            // verbatim. The String overload hands it to java.util.regex.Matcher,
+            // where a backslash escapes and a dollar is a group reference: the
+            // previous form emitted a literal backslash and only produced the
+            // right output because Matcher then swallowed it. It worked for
+            // every semver by accident, and the manifest version is now
+            // load-bearing (CodebaseDynamicPlugin reads it back at runtime).
+            Regex(""""version"\s*:\s*"[^"]*"""").replace(line) { """"version": "$pluginVersion"""" }
         }
     }
 }

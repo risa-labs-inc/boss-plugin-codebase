@@ -32,19 +32,19 @@ object GitGraphLayout {
             }
         }
 
-        // Ancestor sets, bounded by the fetched window - fine for a few hundred commits.
+        // Ancestor sets, bounded by the fetched window - fine for a few hundred
+        // commits. Not memoized: the loop below visits each commit exactly once,
+        // so a cache keyed by hash would only ever be written to.
         val parentsByHash = commits.associateBy({ it.hash }, { it.parents })
-        val ancestorCache = HashMap<String, HashSet<String>>()
-        fun ancestorsOfCommit(c: GitCommitNodeData): HashSet<String> =
-            ancestorCache.getOrPut(c.hash) {
-                val set = HashSet<String>()
-                val queue = ArrayDeque(c.parents)
-                while (queue.isNotEmpty()) {
-                    val p = queue.removeFirst()
-                    if (set.add(p)) parentsByHash[p]?.let { queue.addAll(it) }
-                }
-                set
+        fun ancestorsOfCommit(c: GitCommitNodeData): HashSet<String> {
+            val set = HashSet<String>()
+            val queue = ArrayDeque(c.parents)
+            while (queue.isNotEmpty()) {
+                val p = queue.removeFirst()
+                if (set.add(p)) parentsByHash[p]?.let { queue.addAll(it) }
             }
+            return set
+        }
 
         val laneOf = HashMap<String, Int>()
         val laneHolder = HashMap<Int, String>()

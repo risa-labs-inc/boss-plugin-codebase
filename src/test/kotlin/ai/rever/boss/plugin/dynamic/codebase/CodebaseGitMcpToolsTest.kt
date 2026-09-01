@@ -29,7 +29,7 @@ class CodebaseGitMcpToolsTest {
 
     private val git = FakeGitProvider()
     private val search = FakeSearchProvider()
-    private val tools = CodebaseGitMcpToolProvider("codebase", git, search).tools()
+    private val tools = CodebaseGitMcpToolProvider("codebase", { git }, { search }).tools()
 
     private fun tool(name: String) = tools.first { it.name == name }
 
@@ -112,7 +112,7 @@ class CodebaseGitMcpToolsTest {
 
     @Test
     fun `git log without a provider reports unavailability, not a crash`() {
-        val none = CodebaseGitMcpToolProvider("codebase", null, null).tools()
+        val none = CodebaseGitMcpToolProvider("codebase", { null }, { null }).tools()
         val result =
             runBlocking {
                 none.first { it.name == "git_log" }.handler.call(McpToolArgs(emptyMap()))
@@ -203,8 +203,68 @@ class CodebaseGitMcpToolsTest {
         )
         val result = invoke("git_status", emptyMap())
         assertFalse(result.isError, result.text)
-        listOf("M  m.kt", " A a.kt", "D  d.kt", "R  r.kt", "C  c.kt", "?? u.kt", "!! i.kt", "UU x.kt")
-            .forEach { line -> assertTrue(result.text.contains(line), "missing $line in:\n${result.text}") }
+        // Whole LINES, not `contains`: the tool advertises porcelain "XY path",
+        // and contains("?? u.kt") passes just as happily on a misaligned
+        // " ?? u.kt" - which is what an untracked row rendered as while
+        // statusChar returned two characters for one cell.
+        assertEquals(
+            listOf("M  m.kt", " A a.kt", "D  d.kt", "R  r.kt", "C  c.kt", "?? u.kt", "!! i.kt", "UU x.kt"),
+            result.text.lines(),
+        )
+        assertTrue(
+            result.text.lines().all { it.length > 3 && it[2] == ' ' },
+            "every row must be exactly two status columns then a space:\n${result.text}",
+        )
+    }
+
+    @Test
+    fun `an untracked file staged alongside an index change keeps two columns`() {
+        // git reports ?? as the whole cell, never as a work-tree token bolted
+        // onto an index one.
+        git.status.value = listOf(
+            GitFileStatusData("u.kt", T.UNTRACKED, T.UNTRACKED, isStaged = false, isUnstaged = true),
+        )
+        assertEquals(listOf("?? u.kt"), invoke("git_status", emptyMap()).text.lines())
+    }
+
+    // ---- argument clamping -----------------------------------------------
+
+    @Test
+    fun `a negative git log limit is a clean error path, not an exception`() {
+        // List.take(-1) THROWS. Every other bad argument here returns an
+        // isError result, so a model guessing limit=-1 must not be the one
+        // input that escapes as an exception.
+        val result = invoke("git_log", mapOf("limit" to -1))
+        assertFalse(result.isError, result.text)
+        assertEquals(1, git.logLimits.last(), "a negative limit must clamp to 1")
+    }
+
+    @Test
+    fun `an enormous git log limit is clamped rather than passed through`() {
+        invoke("git_log", mapOf("limit" to 100_000))
+        assertEquals(500, git.logLimits.last(), "the limit must be bounded above")
+    }
+
+    @Test
+    fun `an enormous project search maxResults is clamped`() {
+        invoke("project_search", mapOf("query" to "x", "maxResults" to 1_000_000))
+        assertEquals(2_000, search.searchCalls.last(), "maxResults must be bounded above")
+    }
+
+    @Test
+    fun `an explicit empty JSON array is refused, not read as a file named brackets`() {
+        // The scanner returned null for "[]" (its single element is empty), the
+        // flat fallback split it into the one path "[]", and the caller's
+        // isEmpty() guard never fired - so the provider was handed a file
+        // literally called "[]".
+        val result =
+            invoke(
+                "project_replace",
+                mapOf("query" to "a", "replacement" to "b", "files" to "[]"),
+            )
+        assertTrue(result.isError, result.text)
+        assertTrue("must not be empty" in result.text, result.text)
+        assertTrue(search.replaceCalls.isEmpty(), "nothing may reach the provider")
     }
 
     // ---- fakes ---------------------------------------------------------------
@@ -212,6 +272,7 @@ class CodebaseGitMcpToolsTest {
     private class FakeGitProvider : GitDataProvider {
         val status = MutableStateFlow(emptyList<GitFileStatusData>())
         val diffs = mutableMapOf<String, List<GitDiffData>>()
+        val logLimits = mutableListOf<Int>()
 
         override val fileStatus: StateFlow<List<GitFileStatusData>> = status
         override val commitLog: StateFlow<List<GitCommitInfoData>> = MutableStateFlow(emptyList())
@@ -220,7 +281,9 @@ class CodebaseGitMcpToolsTest {
 
         override suspend fun refreshStatus() {}
 
-        override suspend fun refreshLog(limit: Int) {}
+        override suspend fun refreshLog(limit: Int) {
+            logLimits += limit
+        }
 
         override suspend fun stage(filePath: String) = GitOperationResultData.Success()
 
@@ -264,6 +327,7 @@ class CodebaseGitMcpToolsTest {
 
     private class FakeSearchProvider : ProjectSearchProvider {
         val replaceCalls = mutableListOf<ReplaceCall>()
+        val searchCalls = mutableListOf<Int>()
 
         override suspend fun searchInProject(
             query: String,
@@ -273,7 +337,10 @@ class CodebaseGitMcpToolsTest {
             caseSensitive: Boolean,
             wholeWord: Boolean,
             maxResults: Int,
-        ) = emptyList<FileMatch>()
+        ): List<FileMatch> {
+            searchCalls += maxResults
+            return emptyList()
+        }
 
         override suspend fun replaceInProject(
             query: String,

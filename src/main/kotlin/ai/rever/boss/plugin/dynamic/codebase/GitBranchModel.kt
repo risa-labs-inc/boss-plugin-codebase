@@ -74,6 +74,36 @@ internal object GitBranchModel {
         return ref.none { it.isWhitespace() || it.code < 0x20 || it.code == 0x7F }
     }
 
+    /**
+     * The "Diff against…" choices from the repository's real branch list:
+     * remote copies folded onto their local name, de-duplicated, sorted.
+     *
+     * Its own function rather than reusing [options]: the review picker is a
+     * list of plain refs to review *toward*, so `origin/main` and `main` are
+     * the same answer, whereas the graph picker deliberately keeps them apart
+     * because looking at the remote's history is a different thing to do.
+     */
+    fun reviewBases(
+        branches: List<GitBranchRefData>,
+        remotes: Set<String> = DEFAULT_REMOTES,
+    ): List<String> =
+        branches
+            .asSequence()
+            .map { it.name.trim() }
+            .filter { it.isNotEmpty() && it != "HEAD" }
+            .map { name ->
+                val slash = name.indexOf('/')
+                if (slash in 1 until name.length && name.substring(0, slash) in remotes) {
+                    name.substring(slash + 1)
+                } else {
+                    name
+                }
+            }
+            .filter { it.isNotEmpty() && it != "HEAD" }
+            .distinct()
+            .sorted()
+            .toList()
+
     /** The remote names implied by a branch list, for [refPills]. */
     fun remoteNamesOf(branches: List<GitBranchRefData>): Set<String> =
         branches

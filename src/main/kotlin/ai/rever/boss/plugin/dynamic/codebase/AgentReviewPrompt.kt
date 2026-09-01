@@ -26,9 +26,14 @@ object AgentReviewPrompt {
         instructions: String = "",
         /** Quick keeps it to a short pass; Deep asks for a thorough one. */
         deep: Boolean = false,
-        /** The ref the change is being reviewed toward, e.g. "main". Context for
-         * the agent only - the attached diff is the uncommitted change, never
-         * a diff against this ref.
+        /**
+         * The ref the change is being reviewed toward, e.g. "main".
+         *
+         * The attached diff is the UNCOMMITTED change, never a diff against
+         * this ref - collecting `baseRef..HEAD` inline would blow the budget
+         * on any branch more than a few commits old. The brief says so, and
+         * points the agent at git_diff_between for the committed half, which
+         * it can fetch itself if the review needs it.
          */
         baseRef: String = "",
     ): String {
@@ -37,6 +42,10 @@ object AgentReviewPrompt {
             sb.appendLine(
                 "Review these uncommitted changes (index + working tree) ahead of " +
                     "landing them on `$baseRef`.",
+            )
+            sb.appendLine(
+                "Only the uncommitted change is attached. For the commits already on " +
+                    "this branch, call git_diff_between with from=`$baseRef`, to=`HEAD`.",
             )
         } else {
             sb.appendLine("Review the uncommitted changes in this project (index + working tree vs HEAD).")

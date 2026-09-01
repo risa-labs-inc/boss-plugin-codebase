@@ -87,7 +87,7 @@ internal object GitChangeTree {
         }
 
         val out = mutableListOf<Row>()
-        emit(root, depth = 0, collapsed = collapsed, out = out, prefixLabel = null)
+        emit(root, depth = 0, collapsed = collapsed, out = out)
         return out
     }
 
@@ -96,13 +96,12 @@ internal object GitChangeTree {
         depth: Int,
         collapsed: Set<String>,
         out: MutableList<Row>,
-        prefixLabel: String?,
     ) {
         for (child in node.dirs.values.sortedBy { it.name.lowercase() }) {
             // Compact a single-child directory chain onto one row, the way VS
             // Code's explorer does: src > main > kotlin reads as src/main/kotlin.
             var current = child
-            val label = StringBuilder(prefixLabel?.let { "$it/${child.name}" } ?: child.name)
+            val label = StringBuilder(child.name)
             while (current.files.isEmpty() && current.dirs.size == 1) {
                 val only = current.dirs.values.first()
                 // Stop compacting at a collapsed directory: its own row has to
@@ -120,7 +119,7 @@ internal object GitChangeTree {
                 ),
             )
             if (current.path !in collapsed) {
-                emit(current, depth + 1, collapsed, out, prefixLabel = null)
+                emit(current, depth + 1, collapsed, out)
             }
         }
         for (file in node.files.sortedBy { it.path.lowercase() }) {

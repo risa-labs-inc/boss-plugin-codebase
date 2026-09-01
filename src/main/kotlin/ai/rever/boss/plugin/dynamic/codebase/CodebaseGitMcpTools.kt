@@ -33,9 +33,20 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 internal class CodebaseGitMcpToolProvider(
     override val providerId: String,
-    private val gitProvider: GitDataProvider?,
-    private val searchProvider: ProjectSearchProvider?,
+    /**
+     * Resolved per call, never captured at registration - the same reasoning
+     * the AI gateway is resolved lazily for. Plugin load order is not
+     * guaranteed, so a host that registers its GitDataProvider after this
+     * plugin would otherwise leave all 13 git tools answering "Git is
+     * unavailable" for the rest of the session.
+     */
+    private val git: () -> GitDataProvider?,
+    private val search: () -> ProjectSearchProvider?,
 ) : McpToolProvider {
+
+    private val gitProvider: GitDataProvider? get() = git()
+
+    private val searchProvider: ProjectSearchProvider? get() = search()
 
     override fun tools(): List<McpToolDefinition> = listOf(
         // ---- from git-status ----
@@ -174,7 +185,11 @@ internal class CodebaseGitMcpToolProvider(
             readOnly = true,
             handler = McpToolHandler { args ->
                 val provider = gitProvider ?: return@McpToolHandler unavailableGit()
-                val limit = args.int("limit") ?: 30
+                // Clamped, not taken raw. List.take(-1) THROWS, so a model
+                // guessing limit=-1 was the one bad argument here that escaped
+                // as an exception instead of a clean isError result - and
+                // limit=100000 is one call away from a very large result.
+                val limit = (args.int("limit") ?: DEFAULT_LOG_LIMIT).coerceIn(1, MAX_LOG_LIMIT)
                 val log = awaitFresh(provider.commitLog) { provider.refreshLog(limit) }.take(limit)
                 if (log.isEmpty()) McpToolResult("No commits.")
                 else McpToolResult(log.joinToString("\n") { "${it.shortHash} ${it.subject} (${it.author})" })
@@ -239,7 +254,10 @@ internal class CodebaseGitMcpToolProvider(
                 isRegex = args.boolean("isRegex") ?: false,
                 caseSensitive = args.boolean("caseSensitive") ?: false,
                 wholeWord = args.boolean("wholeWord") ?: false,
-                maxResults = args.int("maxResults") ?: 100,
+                // Clamped for the same reason as git_log's limit: maxResults =
+                // 1_000_000 makes the host scan the entire project to render at
+                // most MAX_RESULT_LINES lines.
+                maxResults = (args.int("maxResults") ?: DEFAULT_SEARCH_RESULTS).coerceIn(1, MAX_SEARCH_RESULTS),
             )
         if (matches.isEmpty()) return McpToolResult("No matches.")
         val lines =
@@ -290,6 +308,14 @@ internal class CodebaseGitMcpToolProvider(
     private fun parseFiles(raw: String): List<String> {
         val trimmed = raw.trim()
         if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            // An explicit empty array is EMPTY, not unparseable: without this
+            // the scanner returned null (its one element is empty), the flat
+            // fallback split "[]" into the single path "[]", and the caller's
+            // isEmpty() guard never fired - so the provider was handed a file
+            // literally named "[]".
+            if (trimmed.length == 2 || trimmed.substring(1, trimmed.length - 1).isBlank()) {
+                return emptyList()
+            }
             parseJsonStringArray(trimmed)?.let { return it }
         }
         return trimmed
@@ -383,11 +409,29 @@ internal class CodebaseGitMcpToolProvider(
         val provider = gitProvider ?: return unavailableGit()
         val status = awaitFresh(provider.fileStatus) { provider.refreshStatus() }
         if (status.isEmpty()) return McpToolResult("Working tree clean.")
-        return McpToolResult(
-            status.joinToString("\n") { s ->
-                "${statusChar(s.indexStatus)}${statusChar(s.workTreeStatus)} ${s.path}"
-            },
-        )
+        return McpToolResult(status.joinToString("\n") { s -> "${statusCell(s)} ${s.path}" })
+    }
+
+    /**
+     * The two-character XY cell the tool description promises.
+     *
+     * [statusChar] returns ONE character per side, deliberately: git emits
+     * `??` and `!!` as the whole cell (index AND worktree), not as a worktree
+     * token. Returning "??" from the worktree side and concatenating it after
+     * the index side produced a three-column ` ??` that no agent slicing
+     * fixed columns can parse.
+     */
+    internal fun statusCell(s: ai.rever.boss.plugin.api.GitFileStatusData): String {
+        val untrackedOrIgnored =
+            listOf(s.indexStatus, s.workTreeStatus).firstOrNull {
+                it == ai.rever.boss.plugin.api.GitFileStatusTypeData.UNTRACKED ||
+                    it == ai.rever.boss.plugin.api.GitFileStatusTypeData.IGNORED
+            }
+        return when (untrackedOrIgnored) {
+            ai.rever.boss.plugin.api.GitFileStatusTypeData.UNTRACKED -> "??"
+            ai.rever.boss.plugin.api.GitFileStatusTypeData.IGNORED -> "!!"
+            else -> "${statusChar(s.indexStatus)}${statusChar(s.workTreeStatus)}"
+        }
     }
 
     private fun statusChar(type: ai.rever.boss.plugin.api.GitFileStatusTypeData?): String =
@@ -398,8 +442,8 @@ internal class CodebaseGitMcpToolProvider(
             ai.rever.boss.plugin.api.GitFileStatusTypeData.DELETED -> "D"
             ai.rever.boss.plugin.api.GitFileStatusTypeData.RENAMED -> "R"
             ai.rever.boss.plugin.api.GitFileStatusTypeData.COPIED -> "C"
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.UNTRACKED -> "??"
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.IGNORED -> "!!"
+            ai.rever.boss.plugin.api.GitFileStatusTypeData.UNTRACKED -> "?"
+            ai.rever.boss.plugin.api.GitFileStatusTypeData.IGNORED -> "!"
             ai.rever.boss.plugin.api.GitFileStatusTypeData.UNMERGED -> "U"
         }
 
@@ -485,6 +529,16 @@ internal class CodebaseGitMcpToolProvider(
     private companion object {
         const val MAX_RESULT_LINES = 100
 
+        const val DEFAULT_LOG_LIMIT = 30
+
+        /** Ceiling on git_log's `limit`; also stops List.take from seeing a negative. */
+        const val MAX_LOG_LIMIT = 500
+
+        const val DEFAULT_SEARCH_RESULTS = 100
+
+        /** Ceiling on project_search's `maxResults`, so the host cannot be asked to scan everything. */
+        const val MAX_SEARCH_RESULTS = 2_000
+
         /** Permission required by every git tool that mutates repository state. */
         const val GIT_WRITE = "git.write"
 
@@ -506,7 +560,7 @@ internal class CodebaseGitMcpToolProvider(
         const val HASH_SCHEMA =
             """{"type":"object","properties":{"hash":{"type":"string","description":"Hash of the commit."}},"required":["hash"]}"""
         const val LIMIT_SCHEMA =
-            """{"type":"object","properties":{"limit":{"type":"integer","description":"Max commits to return (default 30)."}}}"""
+            """{"type":"object","properties":{"limit":{"type":"integer","description":"Max commits to return (default 30, clamped to 1..500)."}}}"""
         const val DIFF_FILE_SCHEMA =
             """{"type":"object","properties":{"path":{"type":"string","description":"File path (repo-relative or absolute)."},"staged":{"type":"boolean","description":"Diff the index instead of the working tree (default false)."}},"required":["path"]}"""
         const val STAGED_SCHEMA =
@@ -516,7 +570,7 @@ internal class CodebaseGitMcpToolProvider(
         const val DIFF_BETWEEN_SCHEMA =
             """{"type":"object","properties":{"from":{"type":"string","description":"Source ref."},"to":{"type":"string","description":"Target ref."},"path":{"type":"string","description":"Optional single file to restrict to."}},"required":["from","to"]}"""
         const val SEARCH_SCHEMA =
-            """{"type":"object","properties":{"query":{"type":"string","description":"Literal text, or a regular expression when isRegex=true."},"pathPattern":{"type":"string","description":"Optional glob filter on the project-relative path (e.g. **/*.kt)."},"excludePattern":{"type":"string","description":"Optional glob filter for paths to EXCLUDE (e.g. **/build/**). Applied inside the engine, so excluded matches do not consume the maxResults cap."},"isRegex":{"type":"boolean","description":"Treat query as a regular expression (default false)."},"caseSensitive":{"type":"boolean","description":"Case-sensitive matching (default false)."},"wholeWord":{"type":"boolean","description":"Whole-word match only (default false)."},"maxResults":{"type":"integer","description":"Hard cap on returned matches (default 100)."}},"required":["query"]}"""
+            """{"type":"object","properties":{"query":{"type":"string","description":"Literal text, or a regular expression when isRegex=true."},"pathPattern":{"type":"string","description":"Optional glob filter on the project-relative path (e.g. **/*.kt)."},"excludePattern":{"type":"string","description":"Optional glob filter for paths to EXCLUDE (e.g. **/build/**). Applied inside the engine, so excluded matches do not consume the maxResults cap."},"isRegex":{"type":"boolean","description":"Treat query as a regular expression (default false)."},"caseSensitive":{"type":"boolean","description":"Case-sensitive matching (default false)."},"wholeWord":{"type":"boolean","description":"Whole-word match only (default false)."},"maxResults":{"type":"integer","description":"Hard cap on returned matches (default 100, clamped to 1..2000)."}},"required":["query"]}"""
         const val REPLACE_SCHEMA =
             """{"type":"object","properties":{"query":{"type":"string","description":"Literal text, or a regular expression when isRegex=true."},"replacement":{"type":"string","description":"Replacement text; ${'$'}1..${'$'}9 capture references for regex queries."},"files":{"type":"string","description":"Comma-separated file paths to touch, or a JSON array of path strings - use the array form when a path contains a comma. Project-relative, or absolute inside the project. Paths outside the project are refused. Never empty."},"isRegex":{"type":"boolean","description":"Treat query as a regular expression (default false)."},"caseSensitive":{"type":"boolean","description":"Case-sensitive matching (default false)."},"wholeWord":{"type":"boolean","description":"Whole-word match only (default false)."},"dryRun":{"type":"boolean","description":"Count without writing (default true)."}},"required":["query","replacement","files"]}"""
     }

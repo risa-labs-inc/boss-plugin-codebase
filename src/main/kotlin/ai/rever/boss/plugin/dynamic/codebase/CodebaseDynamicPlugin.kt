@@ -86,7 +86,7 @@ class CodebaseDynamicPlugin : DynamicPlugin {
             )
             val window = getWindowId().orEmpty()
             pluginScope?.launch {
-                panelEvents?.openPanel(PanelId("atlas", 16), window)
+                panelEvents?.openPanel(PanelId(ATLAS_PANEL_ID, ATLAS_PANEL_ORDINAL), window)
             }
         }
 
@@ -145,8 +145,10 @@ class CodebaseDynamicPlugin : DynamicPlugin {
         context.registerMcpToolProvider(
             CodebaseGitMcpToolProvider(
                 providerId = "$pluginId.git",
-                gitProvider = gitDataProvider,
-                searchProvider = searchProvider,
+                // Suppliers, not values: see the constructor's KDoc. The
+                // gateway above is resolved per call for the same reason.
+                git = { gitDataProvider },
+                search = { searchProvider },
             )
         )
     }
@@ -175,6 +177,15 @@ class CodebaseDynamicPlugin : DynamicPlugin {
     companion object {
         const val EVENT_ATLAS_REVIEW = "atlas.review"
 
+        /**
+         * The fluck-agent panel Agent Review raises. The ordinal is
+         * [PanelId]'s registration slot in the host, not a magic number this
+         * plugin picks - it has to match the value fluck-agent registers with
+         * or openPanel silently addresses nothing.
+         */
+        private const val ATLAS_PANEL_ID = "atlas"
+        private const val ATLAS_PANEL_ORDINAL = 16
+
         /** Last-resort value when the bundled manifest cannot be read. */
         private const val FALLBACK_VERSION = "0.0.0"
 
@@ -186,18 +197,32 @@ class CodebaseDynamicPlugin : DynamicPlugin {
          * 1.5.8).
          */
         private fun readManifestVersion(): String {
-            val stream =
+            // Every plugin's manifest lives at the SAME resource path, so
+            // getResourceAsStream returns whichever one the classloader
+            // reaches first - another plugin's, under parent-first delegation
+            // or the shared classloader of the in-process fallback mode this
+            // manifest declares. Walk them all and take the one whose
+            // pluginId is ours.
+            val resources =
                 CodebaseDynamicPlugin::class.java.classLoader
-                    ?.getResourceAsStream("META-INF/boss-plugin/plugin.json")
+                    ?.getResources("META-INF/boss-plugin/plugin.json")
                     ?: return FALLBACK_VERSION
-            return stream.use { input ->
-                Regex(""""version"\s*:\s*"([^"]+)\"""")
-                    .find(input.readBytes().decodeToString())
-                    ?.groupValues
-                    ?.get(1)
-                    ?: FALLBACK_VERSION
+            val pluginId = "ai.rever.boss.plugin.dynamic.codebase"
+            for (url in resources) {
+                val text = runCatching { url.openStream().use { it.readBytes().decodeToString() } }
+                    .getOrNull() ?: continue
+                if (field(text, "pluginId") != pluginId) continue
+                field(text, "version")?.let { return it }
             }
+            return FALLBACK_VERSION
         }
+
+        /** One top-level string field out of a manifest, without a JSON library on the classpath. */
+        private fun field(json: String, name: String): String? =
+            Regex("\"" + Regex.escape(name) + "\"\\s*:\\s*\"([^\"]*)\"")
+                .find(json)
+                ?.groupValues
+                ?.get(1)
     }
 }
 

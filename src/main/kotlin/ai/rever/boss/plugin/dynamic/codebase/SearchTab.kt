@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.CircularProgressIndicator
 import androidx.compose.material.Icon
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.UnfoldLess
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,12 +45,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -271,11 +275,6 @@ class CodebaseSearchViewModel(
         }
     }
 
-    fun cancelSearch() {
-        searchJob?.cancel()
-        _busy.value = false
-    }
-
     /**
      * Open one match at its own line and column.
      *
@@ -312,8 +311,11 @@ class CodebaseSearchViewModel(
     /** Dry-run first, so the UI can show what will change before writing. */
     fun previewReplacement() {
         if (_query.value.isBlank() || _results.value.isEmpty()) return
+        // Set BEFORE launch: inside the coroutine the flag lands only once the
+        // dispatcher runs the body, so two clicks in the same frame both saw
+        // busy = false and both passed the `enabled = … && !busy` guard.
+        if (!_busy.compareAndSet(expect = false, update = true)) return
         scope.launch {
-            _busy.value = true
             try {
                 _dryRun.value =
                     provider?.replaceInProject(
@@ -335,8 +337,9 @@ class CodebaseSearchViewModel(
 
     fun applyReplacement() {
         val summary = _dryRun.value ?: return
+        // See previewReplacement: a duplicate click here is a duplicate WRITE.
+        if (!_busy.compareAndSet(expect = false, update = true)) return
         scope.launch {
-            _busy.value = true
             try {
                 val applied =
                     provider?.replaceInProject(
@@ -409,8 +412,16 @@ class CodebaseSearchViewModel(
         const val MAX_RESULTS = 500
         const val DEBOUNCE_MS = 250L
 
-        /** How soon a change on disk or in a buffer shows up in the results. */
-        const val REFRESH_MS = 2_500L
+        /**
+         * How soon an edit made outside the panel shows up in the results.
+         *
+         * A full project content scan - a directory walk plus a stat per file
+         * - so the interval is a real cost on a monorepo, and the case it
+         * exists for (someone edits a matched file in the editor) is not one
+         * anybody times with a stopwatch. The replace path does not wait for
+         * it: applyReplacement re-scans explicitly.
+         */
+        const val REFRESH_MS = 15_000L
 
         /** `C:\...` / `C:/...` - an absolute path needs no project root. */
         val WINDOWS_ABSOLUTE = Regex("""^[A-Za-z]:[\\/].*""")
@@ -465,10 +476,14 @@ fun CodebaseSearchContent(
 
     var replaceOpen by remember { mutableStateOf(false) }
     var filtersOpen by remember { mutableStateOf(glob.isNotEmpty() || exclude.isNotEmpty()) }
-    // Collapse state per path, plus a generation counter so "collapse all"
-    // can reset every row without tracking each one.
-    var collapseGeneration by remember { mutableStateOf(0) }
-    var allCollapsed by remember { mutableStateOf(false) }
+    // Collapse state by path, hoisted OUT of the lazy items. It used to be a
+    // `remember` inside each group's item, which a LazyColumn disposes when
+    // the row scrolls off screen - so a group you folded came back expanded
+    // the moment you scrolled past it and back. A generation counter forced
+    // every group to rebuild on "collapse all"; with the state out here the
+    // set is simply rewritten.
+    var collapsedFiles by remember { mutableStateOf(emptySet<String>()) }
+    val allCollapsed = grouped.isNotEmpty() && grouped.all { it.path in collapsedFiles }
 
     // Poll only while the tab is on screen.
     DisposableEffect(viewModel) {
@@ -624,12 +639,11 @@ fun CodebaseSearchContent(
             message = message,
             allCollapsed = allCollapsed,
             onCollapseAll = {
-                allCollapsed = !allCollapsed
-                collapseGeneration++
+                collapsedFiles = if (allCollapsed) emptySet() else grouped.mapTo(mutableSetOf()) { it.path }
             },
             onClear = {
                 viewModel.clear()
-                allCollapsed = false
+                collapsedFiles = emptySet()
             },
         )
         CodebaseHRule()
@@ -656,8 +670,12 @@ fun CodebaseSearchContent(
                     grouped.forEach { entry ->
                         searchFileGroup(
                             entry = entry,
-                            expandedInitially = !allCollapsed,
-                            generation = collapseGeneration,
+                            expanded = entry.path !in collapsedFiles,
+                            onToggle = {
+                                collapsedFiles =
+                                    if (entry.path in collapsedFiles) collapsedFiles - entry.path
+                                    else collapsedFiles + entry.path
+                            },
                             onOpenFile = { viewModel.openFile(entry.path) },
                             onOpenMatch = viewModel::openMatch,
                         )
@@ -738,99 +756,115 @@ private fun SearchSummaryRow(
     }
 }
 
-/** One file's group: the file row, then its match rows when expanded. */
+/**
+ * One file's group: the file row as its own lazy item, then one lazy item per
+ * match.
+ *
+ * Not a single `item { }` holding the whole group. That is what it was, and it
+ * defeated the point of a LazyColumn: with MAX_RESULTS landing in one or two
+ * files, every one of up to 500 match rows composed and measured whether or
+ * not it was on screen. Lazy skipping now works per row.
+ */
 private fun LazyListScope.searchFileGroup(
     entry: FileMatches,
-    expandedInitially: Boolean,
-    generation: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit,
     onOpenFile: () -> Unit,
     onOpenMatch: (FileMatch) -> Unit,
 ) {
-    item(key = "file-${entry.path}-$generation") {
-        SearchFileGroupBody(
+    item(key = "file-${entry.path}") {
+        SearchFileRow(
             entry = entry,
-            expandedInitially = expandedInitially,
+            expanded = expanded,
+            onToggle = onToggle,
             onOpenFile = onOpenFile,
-            onOpenMatch = onOpenMatch,
         )
+    }
+    if (!expanded) return
+    // Keyed by index, not by line/column: the engine can report two matches on
+    // the same line and column (a zero-width regex), and a duplicate key is a
+    // hard crash in LazyColumn rather than a rendering glitch.
+    itemsIndexed(entry.matches, key = { i, _ -> "match-${entry.path}-$i" }) { _, m ->
+        SearchMatchRow(match = m, onOpen = { onOpenMatch(m) })
     }
 }
 
 @Composable
-private fun SearchFileGroupBody(
+private fun SearchFileRow(
     entry: FileMatches,
-    expandedInitially: Boolean,
+    expanded: Boolean,
+    onToggle: () -> Unit,
     onOpenFile: () -> Unit,
-    onOpenMatch: (FileMatch) -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(expandedInitially) }
     val (name, dir) = remember(entry.path) { splitPathForDisplay(entry.path) }
-    Column {
-        CodebaseListRow(onClick = { expanded = !expanded }) { hovered ->
-            Icon(
-                imageVector =
-                    if (expanded) Icons.Rounded.KeyboardArrowDown
-                    else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = CodebasePalette.Secondary,
-            )
-            // One weighted slot for name + directory, so the hover action and
-            // the count badge keep their place however long the path is.
-            CodebaseTooltip(entry.path, modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+    CodebaseListRow(onClick = onToggle) { hovered ->
+        Icon(
+            imageVector =
+                if (expanded) Icons.Rounded.KeyboardArrowDown
+                else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = CodebasePalette.Secondary,
+        )
+        // One weighted slot for name + directory, so the hover action and
+        // the count badge keep their place however long the path is.
+        CodebaseTooltip(entry.path, modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = name,
+                    fontSize = CodebaseMetrics.PrimaryText,
+                    color = CodebasePalette.Foreground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (dir.isNotEmpty()) {
+                    Spacer(Modifier.width(5.dp))
                     Text(
-                        text = name,
-                        fontSize = CodebaseMetrics.PrimaryText,
-                        color = CodebasePalette.Foreground,
+                        text = dir,
+                        fontSize = CodebaseMetrics.MetaText,
+                        color = CodebasePalette.Muted,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        overflow = TextOverflow.MiddleEllipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    if (dir.isNotEmpty()) {
-                        Spacer(Modifier.width(5.dp))
-                        Text(
-                            text = dir,
-                            fontSize = CodebaseMetrics.MetaText,
-                            color = CodebasePalette.Muted,
-                            maxLines = 1,
-                            overflow = TextOverflow.MiddleEllipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
-                    }
                 }
             }
-            CodebaseIconButton(
-                icon = Icons.Rounded.Search,
-                tooltip = "Open file",
-                onClick = onOpenFile,
-                visible = hovered,
-            )
-            CodebaseCountBadge(entry.matches.size)
-            Spacer(Modifier.width(4.dp))
         }
-        if (!expanded) return@Column
-        entry.matches.forEach { m ->
-            CodebaseListRow(onClick = { onOpenMatch(m) }) { _ ->
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = m.line.toString(),
-                    fontSize = CodebaseMetrics.MetaText,
-                    fontFamily = FontFamily.Monospace,
-                    color = CodebasePalette.Muted,
-                    textAlign = TextAlign.End,
-                    maxLines = 1,
-                    modifier = Modifier.width(30.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                HighlightedMatchLine(
-                    line = m.contextLine,
-                    matchStart = m.column - 1,
-                    matchLength = m.matchLength,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
+        CodebaseIconButton(
+            icon = Icons.Rounded.Search,
+            tooltip = "Open file",
+            onClick = onOpenFile,
+            visible = hovered,
+        )
+        CodebaseCountBadge(entry.matches.size)
+        Spacer(Modifier.width(4.dp))
+    }
+}
+
+@Composable
+private fun SearchMatchRow(
+    match: FileMatch,
+    onOpen: () -> Unit,
+) {
+    CodebaseListRow(onClick = onOpen) { _ ->
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = match.line.toString(),
+            fontSize = CodebaseMetrics.MetaText,
+            fontFamily = FontFamily.Monospace,
+            color = CodebasePalette.Muted,
+            textAlign = TextAlign.End,
+            maxLines = 1,
+            modifier = Modifier.width(30.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        HighlightedMatchLine(
+            line = match.contextLine,
+            matchStart = match.column - 1,
+            matchLength = match.matchLength,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -924,19 +958,36 @@ private fun ConfirmReplaceSheet(
 ) {
     // A modal sheet must EAT input: without a consuming pointer modifier the
     // scrim never consumes the click, so the result rows underneath stay live
-    // while the confirmation is on screen.
+    // while the confirmation is on screen - and flipping a search toggle back
+    // there calls setSearchOption, which nulls _dryRun and yanks this sheet
+    // away mid-decision. It also has to hold focus, or the Escape handler on
+    // an unfocused node never fires.
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(CodebaseScrim)
             .pointerInput(Unit) {
                 awaitPointerEventScope {
+                    // Every event, not only Press: consuming the down change
+                    // is what stops a click reaching the rows underneath, and
+                    // consuming scroll stops the list behind the sheet moving
+                    // while it is up. Consumed on the MAIN pass, which runs
+                    // child-first, so this sheet's own buttons still see it.
                     while (true) {
-                        val event = awaitPointerEvent()
-                        if (event.type == PointerEventType.Press) {
-                            event.changes.forEach { it.consume() }
-                        }
+                        awaitPointerEvent().changes.forEach { it.consume() }
                     }
+                }
+            }
+            .focusRequester(focusRequester)
+            .focusTarget()
+            .onPreviewKeyEvent { e ->
+                if (e.type == KeyEventType.KeyDown && e.key == Key.Escape) {
+                    onDismiss()
+                    true
+                } else {
+                    false
                 }
             },
         contentAlignment = Alignment.Center,

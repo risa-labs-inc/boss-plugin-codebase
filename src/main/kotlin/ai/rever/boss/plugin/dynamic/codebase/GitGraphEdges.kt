@@ -56,8 +56,10 @@ internal object GitGraphEdges {
         commits.forEachIndexed { childRow, commit ->
             val childLane = lanes.getOrElse(childRow) { 0 }
             for (parentHash in commit.parents) {
-                // A parent outside the fetched window: the line leaves the
-                // bottom of the last row rather than stopping mid-air.
+                // A parent outside the fetched window draws nothing: the
+                // window's last row is where history visibly stops, and a
+                // stub leaving the bottom edge would read as a lane that
+                // continues into the next row rather than off the page.
                 val parentRow = rowOf[parentHash] ?: continue
                 if (parentRow <= childRow) continue
                 val parentLane = lanes.getOrElse(parentRow) { 0 }

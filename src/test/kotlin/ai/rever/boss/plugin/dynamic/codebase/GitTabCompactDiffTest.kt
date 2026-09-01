@@ -4,6 +4,7 @@ import ai.rever.boss.plugin.api.DiffHunk
 import ai.rever.boss.plugin.api.DiffLine
 import ai.rever.boss.plugin.api.DiffLineKind
 import ai.rever.boss.plugin.api.GitDiffData
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -20,6 +21,13 @@ class GitTabCompactDiffTest {
             onAgentReview = {},
             getProjectPath = { null },
         )
+
+    @AfterTest
+    fun dispose() {
+        // The view model starts a CoroutineScope in its constructor; without
+        // this the class leaks one per test run.
+        vm.dispose()
+    }
 
     private fun ctx(t: String) = DiffLine(t, DiffLineKind.CONTEXT)
 

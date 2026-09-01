@@ -247,4 +247,46 @@ class GitBranchModelTest {
         assertFalse(GitBranchModel.isSafeRef("has\u0000nul"))
         assertFalse(GitBranchModel.isSafeRef("a".repeat(256)))
     }
+
+    // ---- reviewBases ----
+
+    @Test
+    fun `review bases fold the remote copy onto the local name`() {
+        // "Diff against..." lists refs to review TOWARD, so origin/main and
+        // main are the same answer - unlike the graph picker, where looking at
+        // the remote's history is a different thing to do.
+        assertEquals(
+            listOf("main", "zeta"),
+            GitBranchModel.reviewBases(
+                listOf(local("main", current = true), remote("origin/main"), local("zeta")),
+                setOf("origin"),
+            ),
+        )
+    }
+
+    @Test
+    fun `review bases keep a local branch that merely looks remote`() {
+        // "someone/something" is a local branch, not a remote-tracking ref,
+        // and the repository's real remote set is the only way to tell.
+        assertEquals(
+            listOf("feat/x", "someone/something"),
+            GitBranchModel.reviewBases(
+                listOf(local("someone/something"), remote("upstream/feat/x")),
+                setOf("upstream"),
+            ),
+        )
+    }
+
+    @Test
+    fun `review bases drop HEAD and blanks`() {
+        // origin/HEAD folds to "HEAD", which is not a branch anybody reviews
+        // toward - it has to be dropped AFTER folding as well as before.
+        assertEquals(
+            listOf("main"),
+            GitBranchModel.reviewBases(
+                listOf(local("main"), local("HEAD"), remote("origin/HEAD"), local("   ")),
+                setOf("origin"),
+            ),
+        )
+    }
 }

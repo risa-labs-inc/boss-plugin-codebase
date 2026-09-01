@@ -58,7 +58,7 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.rounded.FormatListBulleted
+import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.automirrored.rounded.Undo
@@ -85,7 +85,6 @@ import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
@@ -149,9 +148,9 @@ fun CodebaseGitContent(
     var untrackedOpen by remember { mutableStateOf(true) }
     var graphOpen by remember { mutableStateOf(true) }
     var confirm by remember { mutableStateOf<GitConfirmation?>(null) }
-    // Deliberately shared across the STAGED / CHANGES / UNTRACKED groups:
-    // the same directory is the same directory on all three sides, so its
-    // collapsed state is one preference, not three.
+    // One set across all three change groups on purpose: a directory you
+    // have folded away is folded away, and the same path appearing in two
+    // groups is the same directory in the same project.
     var collapsedDirs by remember { mutableStateOf(emptySet<String>()) }
     // In the view model, not a `remember`: the tab composable tears down on
     // every tab hop, and a layout preference should not reset with it.
@@ -185,13 +184,10 @@ fun CodebaseGitContent(
             branch = branch,
             isRepo = isRepo,
             busy = busy,
-            settingsOpen = settingsOpen,
             onRefresh = {
                 viewModel.refreshStatus()
                 viewModel.loadGraph(reset = true)
             },
-            onReview = { viewModel.startAgentReview() },
-            onToggleSettings = { settingsOpen = !settingsOpen },
             layout = layout,
             onToggleLayout = { viewModel.toggleChangeLayout() },
         )
@@ -520,10 +516,7 @@ private fun GitToolbar(
     branch: String,
     isRepo: Boolean,
     busy: Boolean,
-    settingsOpen: Boolean,
     onRefresh: () -> Unit,
-    onReview: () -> Unit,
-    onToggleSettings: () -> Unit,
     layout: GitChangeLayout,
     onToggleLayout: () -> Unit,
 ) {
@@ -563,7 +556,9 @@ private fun GitToolbar(
             Spacer(Modifier.width(6.dp))
         }
         CodebaseIconButton(
-            icon = if (layout == GitChangeLayout.TREE) Icons.Rounded.AccountTree else Icons.Rounded.FormatListBulleted,
+            icon =
+                if (layout == GitChangeLayout.TREE) Icons.Rounded.AccountTree
+                else Icons.AutoMirrored.Rounded.FormatListBulleted,
             tooltip = if (layout == GitChangeLayout.TREE) "View as list" else "View as tree",
             onClick = onToggleLayout,
         )
@@ -712,7 +707,10 @@ private fun GitAgentReview(
         }
         Spacer(Modifier.height(4.dp))
         CodebaseTooltip(
-            text = "Runs the agent over this branch's diff and reports what it finds. " +
+            // Says what is actually attached. "this branch's diff" read as a
+            // full baseRef..HEAD review, which is not what is collected - the
+            // brief asks the agent to fetch that half itself if it needs it.
+            text = "Runs the agent over the uncommitted changes and reports what it finds. " +
                 "Nothing is edited.",
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -722,7 +720,9 @@ private fun GitAgentReview(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = if (base.isBlank()) "Review uncommitted changes." else "Review diffs vs. $base.",
+                    text =
+                        if (base.isBlank()) "Review uncommitted changes."
+                        else "Review uncommitted changes, targeting $base.",
                     fontSize = CodebaseMetrics.MetaText,
                     color = CodebasePalette.Muted,
                     maxLines = 1,
@@ -874,6 +874,11 @@ private fun LazyListScope.changeGroup(
         return
     }
     val rows = GitChangeTree.rows(files, collapsedDirs)
+    // Precomputed once per group, not inside the directory row's composable
+    // lambda: there it was an O(files) filter re-run on every recomposition
+    // of every directory row.
+    val filesByDir = rows.filterIsInstance<GitChangeTree.Row.Directory>()
+        .associate { it.path to GitChangeTree.filesUnder(files, it.path) }
     items(rows, key = { row ->
         when (row) {
             is GitChangeTree.Row.Directory -> "$title-dir-${row.path}"
@@ -887,7 +892,7 @@ private fun LazyListScope.changeGroup(
                     collapsed = row.path in collapsedDirs,
                     onToggle = { onToggleDir(row.path) },
                     actions = { hovered ->
-                        directoryActions(GitChangeTree.filesUnder(files, row.path), hovered)
+                        directoryActions(filesByDir[row.path].orEmpty(), hovered)
                     },
                 )
 
@@ -1162,7 +1167,9 @@ private fun GitCommitRow(
                             body = "Check out ${node.shortHash}? This detaches HEAD from the current branch.",
                             confirmLabel = "Checkout",
                             destructive = true,
-                            action = { viewModel.checkout(node.shortHash) },
+                            // The full hash, like revert and cherry-pick above:
+                            // an abbreviation can collide in a large repository.
+                            action = { viewModel.checkout(node.hash) },
                         ),
                     )
                 },
@@ -1477,11 +1484,13 @@ private fun GitConfirmDialog(
             .background(CodebaseScrim)
             .pointerInput(Unit) {
                 awaitPointerEventScope {
+                    // Every event, not only Press: consuming the down change
+                    // is what stops a click reaching the rows underneath, and
+                    // consuming scroll stops the list behind the sheet moving
+                    // while it is up. Consumed on the MAIN pass, which runs
+                    // child-first, so this sheet's own buttons still see it.
                     while (true) {
-                        val event = awaitPointerEvent()
-                        if (event.type == PointerEventType.Press) {
-                            event.changes.forEach { it.consume() }
-                        }
+                        awaitPointerEvent().changes.forEach { it.consume() }
                     }
                 }
             }
@@ -1600,6 +1609,10 @@ private fun GraphRowCanvas(
     row: GitGraphEdges.Row,
     laneCount: Int,
 ) {
+    // Lanes past the ceiling all draw in the last one. That is a deliberate
+    // width cap on a panel this narrow, not an oversight - but it means a
+    // repository with more than GRAPH_MAX_LANES concurrent branches shows
+    // several lines sharing the rightmost column.
     val drawnLanes = laneCount.coerceIn(1, GRAPH_MAX_LANES)
     val palette = CodebasePalette.laneColors
     Canvas(

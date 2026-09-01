@@ -53,7 +53,7 @@ import com.arkivanov.decompose.ComponentContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -137,12 +137,18 @@ class CodebaseComponent(
             }
         }
 
+        // Three separate collectors on purpose. A StateFlow collect never
+        // completes, so chaining these in one LaunchedEffect body left every
+        // statement after the first collect unreachable - the splitter
+        // position was neither loaded nor persisted.
         LaunchedEffect(Unit) {
             // The reads are blocking I/O - and the tab-switch write below is
             // already off the UI thread, so keep this path consistent: a
             // blocking storage implementation must not stall the first frame.
             val saved = withContext(Dispatchers.IO) { storage?.getString("codebase.tab") }
             selectedTab = CodebaseTab.fromStorage(saved)
+        }
+        LaunchedEffect(Unit) {
             // The change-group layout was a `remember` inside the GIT tab, so
             // it reset on every hop to FILES and back. It is a preference;
             // persist it beside the selected tab. Seeded BEFORE the collector
@@ -157,15 +163,20 @@ class CodebaseComponent(
                     storage?.putString("codebase.gitLayout", layout.storageKey)
                 }
             }
+        }
+        LaunchedEffect(Unit) {
             gitViewModel.setSplitFraction(
                 withContext(Dispatchers.IO) {
-                    storage?.getString("codebase.gitSplit")?.toFloatOrNull()?.coerceIn(0.15f, 0.85f)
-                        ?: 0.55f
+                    storage?.getString("codebase.gitSplit")?.toFloatOrNull() ?: DEFAULT_SPLIT
                 },
             )
-            // Debounced: a drag emits a value per pointer move, and each
-            // emission would be a file write without the settle delay.
-            gitViewModel.splitFraction.debounce(300).collect { fraction ->
+            // collectLatest, not collect: a splitter drag emits a value per
+            // pointer move and each one would be a file write. The pending
+            // write is cancelled by the next value, so only where the drag
+            // settled is stored. (collectLatest and not `debounce`, which is
+            // still a @FlowPreview API.)
+            gitViewModel.splitFraction.collectLatest { fraction ->
+                delay(SPLIT_SETTLE_MS)
                 withContext(Dispatchers.IO) {
                     storage?.putString("codebase.gitSplit", fraction.toString())
                 }
@@ -232,13 +243,13 @@ class CodebaseComponent(
  */
 @Composable
 private fun CodebaseProjectHeader(projectPath: String?) {
-    val hasProject = !projectPath.isNullOrEmpty()
-    val name =
-        if (hasProject) PathUtils.name(projectPath!!).ifEmpty { projectPath } else "No project"
-    val display = if (hasProject) collapseHome(projectPath!!) else "Open a folder in Files"
+    val path = projectPath.orEmpty()
+    val hasProject = path.isNotEmpty()
+    val name = if (hasProject) PathUtils.name(path).ifEmpty { path } else "No project"
+    val display = if (hasProject) collapseHome(path) else "Open a folder in Files"
 
     CodebaseTooltip(
-        text = if (hasProject) projectPath!! else "No project selected",
+        text = if (hasProject) path else "No project selected",
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
@@ -280,13 +291,23 @@ private fun CodebaseProjectHeader(projectPath: String?) {
     }
 }
 
-/** `/Users/me/src/app` reads as `~/src/app` - the home prefix carries nothing. */
-internal fun collapseHome(path: String): String {
-    val home = System.getProperty("user.home")?.trimEnd('/').orEmpty()
+/**
+ * `/Users/me/src/app` reads as `~/src/app` - the home prefix carries nothing.
+ *
+ * Separator taken from [PathUtils] rather than hardcoded to '/': these paths
+ * come from `File.absolutePath`, so on Windows both the home directory and
+ * the project path are backslash-joined and a '/'-only rule never matched.
+ */
+internal fun collapseHome(
+    path: String,
+    separator: Char = PathUtils.platformSeparator,
+    userHome: String? = System.getProperty("user.home"),
+): String {
+    val home = userHome?.trimEnd(separator).orEmpty()
     if (home.isEmpty()) return path
     return when {
         path == home -> "~"
-        path.startsWith("$home/") -> "~" + path.removePrefix(home)
+        PathUtils.isNestedUnder(path, home, separator) -> "~" + path.removePrefix(home)
         else -> path
     }
 }
@@ -297,6 +318,12 @@ internal fun collapseHome(path: String): String {
  * churn - 5s is indistinguishable in practice.
  */
 private const val PROJECT_POLL_MS = 5_000L
+
+/** Splitter position when storage holds none. Matches CodebaseSplitter's clamp midpoint. */
+private const val DEFAULT_SPLIT = 0.55f
+
+/** How long a splitter drag must settle before its position is written. */
+private const val SPLIT_SETTLE_MS = 300L
 
 /**
  * The panel's tab strip: icon + label while the panel is wide enough, icons

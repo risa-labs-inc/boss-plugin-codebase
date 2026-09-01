@@ -120,4 +120,19 @@ class SearchPathTest {
         val home = System.getProperty("user.home").trimEnd('/')
         assertEquals("${home}2/app", collapseHome("${home}2/app"))
     }
+
+    @Test
+    fun `a backslash-joined home collapses on a Windows-style path`() {
+        // These paths come from File.absolutePath, so on Windows both the home
+        // directory and the project are backslash-joined and the '/'-only rule
+        // never matched. The separator is a parameter so the case is testable
+        // on any OS.
+        val winHome = "C:\\Users\\me"
+        assertEquals("~\\src\\app", collapseHome("$winHome\\src\\app", '\\', winHome))
+        assertEquals("~", collapseHome(winHome, '\\', winHome))
+        assertEquals(
+            "C:\\Users\\meelsewhere\\app",
+            collapseHome("C:\\Users\\meelsewhere\\app", '\\', winHome),
+        )
+    }
 }
