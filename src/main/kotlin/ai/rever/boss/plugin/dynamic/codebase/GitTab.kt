@@ -280,13 +280,17 @@ class CodebaseGitViewModel(
                         _message.value = "Failed to load git history: ${e.message}"
                         null
                     } ?: emptyList()
-                _graph.value = nodes
                 // The HEAD decoration only names the checked-out branch while
                 // the graph IS HEAD's; another branch's tip carries no
                 // `HEAD ->`, and reading it there blanked the toolbar.
+                // Publish it BEFORE the graph: the name is part of reading
+                // this graph, and a consumer that observes a non-empty graph
+                // (the test does, on its own thread) must never see it
+                // without the branch name - the reverse order raced on CI.
                 if (ref == null) {
                     branchOf(nodes).takeIf { it.isNotEmpty() }?.let { _currentBranch.value = it }
                 }
+                _graph.value = nodes
                 val found = branchesOf(nodes)
                 _branches.value = found
                 if (_reviewBase.value.isBlank()) {

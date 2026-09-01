@@ -187,7 +187,9 @@ class GitGraphBranchViewModelTest {
         awaitUntil("the side graph") { vm.graphRef.value == "side" }
         vm.showCurrentBranch()
 
-        awaitUntil("the return to HEAD") { vm.graphRef.value == null }
+        awaitUntil("the return to HEAD") {
+            vm.graphRef.value == null && vm.graph.value.map { it.hash } == listOf("h1")
+        }
         assertEquals(listOf("h1"), vm.graph.value.map { it.hash })
     }
 
