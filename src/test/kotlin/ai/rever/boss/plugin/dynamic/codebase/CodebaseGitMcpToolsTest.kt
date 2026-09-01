@@ -29,9 +29,19 @@ class CodebaseGitMcpToolsTest {
 
     private val git = FakeGitProvider()
     private val search = FakeSearchProvider()
-    private val tools = CodebaseGitMcpToolProvider("codebase", { git }, { search }).tools()
+    private val tools =
+        CodebaseGitMcpToolProvider("codebase", { git }, { search }, flowSettleMs = SETTLE_MS).tools()
 
     private fun tool(name: String) = tools.first { it.name == name }
+
+    private companion object {
+        /**
+         * Short on purpose. The real value is 2 s; at that length every call
+         * whose refresh publishes nothing burned two seconds of wall clock,
+         * which was most of this class's runtime.
+         */
+        const val SETTLE_MS = 60L
+    }
 
     private fun invoke(name: String, args: Map<String, Any?>): McpToolResult =
         runBlocking { tool(name).handler.call(McpToolArgs(args)) }
@@ -267,22 +277,92 @@ class CodebaseGitMcpToolsTest {
         assertTrue(search.replaceCalls.isEmpty(), "nothing may reach the provider")
     }
 
+    // ---- awaitFresh --------------------------------------------------------
+
+    @Test
+    fun `git status reports the state the refresh published, not the one before it`() {
+        // The whole point of awaitFresh: the provider refreshes asynchronously
+        // (over IPC out-of-process), so reading fileStatus.value straight after
+        // refreshStatus() returns the PRE-refresh tree. An agent calling
+        // git_status right after git_stage would act on a stale premise.
+        git.status.value = listOf(
+            GitFileStatusData("old.kt", null, T.MODIFIED, isStaged = false, isUnstaged = true),
+        )
+        git.pendingStatus = listOf(
+            GitFileStatusData("new.kt", T.ADDED, null, isStaged = true, isUnstaged = false),
+        )
+
+        val result = invoke("git_status", emptyMap())
+
+        assertEquals(listOf("A  new.kt"), result.text.lines())
+    }
+
+    @Test
+    fun `a refresh that publishes nothing falls back to the latest value`() {
+        // A no-op refresh emits nothing at all (StateFlow conflates an
+        // identical value), so the wait must time out onto what is already
+        // there rather than hanging or reporting empty.
+        git.status.value = listOf(
+            GitFileStatusData("same.kt", null, T.MODIFIED, isStaged = false, isUnstaged = true),
+        )
+        git.pendingStatus = null
+
+        val result = invoke("git_status", emptyMap())
+
+        assertEquals(listOf(" M same.kt"), result.text.lines())
+    }
+
+    @Test
+    fun `git log reports the commits the refresh published`() {
+        git.pendingLog = listOf(
+            GitCommitInfoData(
+                hash = "abcdef1234",
+                shortHash = "abcdef1",
+                subject = "a subject",
+                author = "someone",
+                authorEmail = "s@example.com",
+                date = 0L,
+                refs = emptyList(),
+            ),
+        )
+
+        val result = invoke("git_log", emptyMap())
+
+        assertFalse(result.isError, result.text)
+        assertEquals(listOf("abcdef1 a subject (someone)"), result.text.lines())
+    }
+
     // ---- fakes ---------------------------------------------------------------
 
     private class FakeGitProvider : GitDataProvider {
         val status = MutableStateFlow(emptyList<GitFileStatusData>())
         val diffs = mutableMapOf<String, List<GitDiffData>>()
         val logLimits = mutableListOf<Int>()
+        val log = MutableStateFlow(emptyList<GitCommitInfoData>())
+
+        /**
+         * What [refreshStatus] will publish, or null to publish nothing.
+         *
+         * The real provider re-reads the work tree and PUBLISHES on its flow;
+         * a fake whose refresh does nothing never lets awaitFresh resolve, so
+         * every call paid the full settle timeout and the behaviour awaitFresh
+         * exists for was never exercised.
+         */
+        var pendingStatus: List<GitFileStatusData>? = null
+        var pendingLog: List<GitCommitInfoData>? = null
 
         override val fileStatus: StateFlow<List<GitFileStatusData>> = status
-        override val commitLog: StateFlow<List<GitCommitInfoData>> = MutableStateFlow(emptyList())
+        override val commitLog: StateFlow<List<GitCommitInfoData>> = log
         override val isGitRepository: StateFlow<Boolean> = MutableStateFlow(true)
         override val isLoading: StateFlow<Boolean> = MutableStateFlow(false)
 
-        override suspend fun refreshStatus() {}
+        override suspend fun refreshStatus() {
+            pendingStatus?.let { status.value = it }
+        }
 
         override suspend fun refreshLog(limit: Int) {
             logLimits += limit
+            pendingLog?.let { log.value = it }
         }
 
         override suspend fun stage(filePath: String) = GitOperationResultData.Success()

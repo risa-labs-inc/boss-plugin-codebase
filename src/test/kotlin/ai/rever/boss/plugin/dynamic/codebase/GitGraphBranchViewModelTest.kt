@@ -111,6 +111,9 @@ class GitGraphBranchViewModelTest {
             git = provider,
             onAgentReview = { _ -> },
             getProjectPath = { "/repo" },
+            // The real 2 s settle would be paid on every construction; the
+            // fakes never move isGitRepository, so it always times out.
+            repoFlagSettleMs = 50L,
         ).also { viewModels += it }
 
     /** The view model owns its own scope, so the assertions wait rather than race. */

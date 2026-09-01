@@ -124,6 +124,7 @@ fun CodebaseGitContent(
 
     val fileStatus by viewModel.fileStatus.collectAsState()
     val graph by viewModel.graph.collectAsState()
+    val reviewing by viewModel.reviewing.collectAsState()
     val hasMoreGraph by viewModel.hasMoreGraph.collectAsState()
     val graphBusy by viewModel.graphBusy.collectAsState()
     val busy by viewModel.busy.collectAsState()
@@ -438,7 +439,10 @@ fun CodebaseGitContent(
                         base = reviewBase,
                         branches = branches,
                         onBaseChange = viewModel::setReviewBase,
-                        busy = busy,
+                        // reviewing, not busy: busy is every git operation, so
+                        // staging a file used to relabel this pill "Reviewing…"
+                        // and an unrelated fetch made it unclickable.
+                        reviewing = reviewing,
                         onFindIssues = { viewModel.startAgentReview() },
                     )
 
@@ -591,7 +595,7 @@ private fun GitAgentReview(
     base: String,
     branches: List<String>,
     onBaseChange: (String) -> Unit,
-    busy: Boolean,
+    reviewing: Boolean,
     onFindIssues: () -> Unit,
 ) {
     Column(
@@ -612,7 +616,7 @@ private fun GitAgentReview(
                 .height(CodebaseMetrics.InputHeight)
                 .clip(RoundedCornerShape(CodebaseMetrics.ButtonRadius))
                 .background(
-                    if (busy) CodebasePalette.Accent.copy(alpha = 0.25f)
+                    if (reviewing) CodebasePalette.Accent.copy(alpha = 0.25f)
                     else CodebasePalette.Accent.copy(alpha = 0.85f),
                 ),
             verticalAlignment = Alignment.CenterVertically,
@@ -622,7 +626,7 @@ private fun GitAgentReview(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .then(if (busy) Modifier else Modifier.clickable(onClick = onFindIssues)),
+                    .then(if (reviewing) Modifier else Modifier.clickable(onClick = onFindIssues)),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -630,14 +634,14 @@ private fun GitAgentReview(
                     imageVector = Icons.Outlined.AutoAwesome,
                     contentDescription = null,
                     modifier = Modifier.size(CodebaseMetrics.Glyph),
-                    tint = if (busy) onAccent.copy(alpha = 0.45f) else onAccent,
+                    tint = if (reviewing) onAccent.copy(alpha = 0.45f) else onAccent,
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = if (busy) "Reviewing…" else "Fluck Agent Review",
+                    text = if (reviewing) "Reviewing…" else "Fluck Agent Review",
                     fontSize = CodebaseMetrics.SecondaryText,
                     fontWeight = FontWeight.Medium,
-                    color = if (busy) onAccent.copy(alpha = 0.45f) else onAccent,
+                    color = if (reviewing) onAccent.copy(alpha = 0.45f) else onAccent,
                     maxLines = 1,
                     // "Fluck Agent Review" is two and a half times the width of
                     // the old "Find Issues", and it shares this pill with a
@@ -1038,7 +1042,11 @@ private fun GitGraphList(
     }
 
     LazyColumn(modifier = modifier.fillMaxWidth()) {
-        itemsIndexed(graph, key = { _, n -> n.hash }) { index, node ->
+        // Keyed by index AND hash. A duplicate key throws IllegalArgumentException
+        // out of LazyColumn rather than rendering oddly, and a commit hash is
+        // only unique if the list is - GitGraphEdges.build already uses
+        // putIfAbsent for its row lookup, i.e. it does not assume that.
+        itemsIndexed(graph, key = { i, n -> "$i-${n.hash}" }) { index, node ->
             GitCommitRow(
                 node = node,
                 graphRow = graphRows.getOrElse(index) {
@@ -1092,7 +1100,7 @@ private fun GitCommitRow(
         Spacer(Modifier.width(4.dp))
         // The row shows the relative age; the tooltip carries the absolute date
         // formatCommitDate was written for.
-        val absoluteDate = formatCommitDate(node.date)
+        val absoluteDate = remember(node.date) { formatCommitDate(node.date) }
         val tooltip =
             if (absoluteDate.isNotEmpty()) "${node.shortHash}  ${node.subject}\n${node.author}  •  $absoluteDate"
             else "${node.shortHash}  ${node.subject}\n${node.author}"

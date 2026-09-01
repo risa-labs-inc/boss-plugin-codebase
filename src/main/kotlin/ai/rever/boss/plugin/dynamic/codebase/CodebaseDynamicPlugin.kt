@@ -65,6 +65,14 @@ class CodebaseDynamicPlugin : DynamicPlugin {
 
         // Agent Review wiring: publish the event the fluck-agent (Atlas)
         // listens for, then raise/focus its panel.
+        //
+        // NOTE: this is a BROADCAST on the application event bus, not a
+        // targeted send, and the payload carries up to
+        // AgentReviewPrompt.INLINE_DIFF_BUDGET characters of source diff. Every
+        // loaded plugin in this process can observe it. That is acceptable
+        // because the bus is in-process and the plugin set is host-governed -
+        // but it is source content leaving this plugin, so a targeted channel
+        // would be the better shape if the API ever grows one.
         val eventBus = context.applicationEventBus
         val panelEvents = context.panelEventProvider
         // autoStart is always true: the button IS the request to run the

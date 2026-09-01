@@ -15,16 +15,18 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * The GIT tab of the codebase panel (P7): the changes accordion plus the
@@ -52,6 +54,12 @@ class CodebaseGitViewModel(
     private val aiGateway: () -> AiGatewayAPI? = { null },
     /** Why AI is unavailable, or null when it is ready. */
     private val aiUnavailable: () -> String? = { null },
+    /**
+     * How long [awaitRepositoryFlag] waits for the host's repository flag to
+     * move after a refresh. Injectable so tests do not pay the real settle
+     * time on every construction.
+     */
+    private val repoFlagSettleMs: Long = REPO_FLAG_SETTLE_MS,
 ) {
     // Blocking git/IPC and storage I/O, not CPU-bound work: Default is
     // sized to cores and these calls would block it.
@@ -125,6 +133,17 @@ class CodebaseGitViewModel(
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
+
+    /**
+     * True only while Agent Review is collecting.
+     *
+     * Its own flag for the same reason [_generating] is: [_busy] is set by
+     * every stage, unstage, discard, commit, fetch, pull and push, so driving
+     * the review pill from it made staging a file read "Reviewing…", and made
+     * the review button dead for the duration of any unrelated git operation.
+     */
+    private val _reviewing = MutableStateFlow(false)
+    val reviewing: StateFlow<Boolean> = _reviewing.asStateFlow()
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
@@ -239,6 +258,25 @@ class CodebaseGitViewModel(
     private val _loaded = MutableStateFlow(false)
     val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
 
+    /**
+     * Serialises graph loads. See [loadGraph].
+     *
+     * Declared ABOVE `init`, which calls loadGraph() during construction:
+     * property initializers run in declaration order, so leaving these below it
+     * left them null at that first call.
+     */
+    private val graphMutex = Mutex()
+
+    /**
+     * Which graph load is newest.
+     *
+     * Atomic because loadGraph is called from the UI thread (Refresh, Load
+     * more, the branch picker) AND from inside coroutines on [scope] (after a
+     * commit, a pull, a project switch). A plain `var` holding the in-flight
+     * Job would be read and written from both with no happens-before.
+     */
+    private val graphGeneration = java.util.concurrent.atomic.AtomicInteger(0)
+
     init {
         // Mirror the provider's status flow for the lifetime of the tab. This
         // is the single source of truth for the three groups; operations only
@@ -260,6 +298,8 @@ class CodebaseGitViewModel(
         _commitMessage.value = value
     }
 
+    /** Volatile: started/stopped from the UI thread, cancelled from dispose(). */
+    @Volatile
     private var statusTimer: Job? = null
 
     /** Ask the provider to re-read the work tree; the collector delivers it. */
@@ -302,7 +342,7 @@ class CodebaseGitViewModel(
         val provider = git ?: return false
         val before = provider.isGitRepository.value
         provider.refreshStatus()
-        return withTimeoutOrNull(REPO_FLAG_SETTLE_MS) {
+        return withTimeoutOrNull(repoFlagSettleMs) {
             provider.isGitRepository.first { it != before }
         } ?: provider.isGitRepository.value
     }
@@ -366,53 +406,84 @@ class CodebaseGitViewModel(
         loadGraph(reset = true)
     }
 
+    /**
+     * Load (or page) the commit graph.
+     *
+     * Superseding, not de-duplicating. Setting [_graphBusy] inside the
+     * coroutine let two "Load more" clicks in the same frame both pass the
+     * `enabled` guard, compute the same limit from the same `_graph.value.size`
+     * and issue two identical fetches - whichever returned first cleared the
+     * spinner while the other was still running, and the two then interleaved
+     * their writes to `_graph` and `_graphExhausted`.
+     *
+     * A compare-and-set would fix that by DROPPING the second call, which is
+     * right for a repeated "Load more" and wrong for everything else:
+     * `selectGraphBranch` and Refresh are new intent, and dropping them leaves
+     * the graph on the previous ref.
+     *
+     * So loads are serialised on [graphMutex] instead - only one fetch touches
+     * the graph state at a time - and a request that a newer one has already
+     * superseded while it queued is skipped rather than re-fetching what the
+     * newer one is about to fetch anyway.
+     */
     fun loadGraph(reset: Boolean = false) {
+        // Set here, not in the body: the spinner must be up from the click,
+        // not from whenever the dispatcher gets to it.
+        _graphBusy.value = true
+        val generation = graphGeneration.incrementAndGet()
         scope.launch {
-            _graphBusy.value = true
-            try {
-                val limit =
-                    if (reset) GRAPH_PAGE
-                    else (_graph.value.size + GRAPH_PAGE).coerceAtMost(GRAPH_MAX)
-                val ref = _graphRef.value
-                // Always logGraphFor, never logGraph: its default body
-                // delegates to logGraph for a null ref, so on a host that
-                // predates 1.0.90 the checked-out history still draws and only
-                // the picker degrades.
-                var failed = false
-                val nodes =
-                    runCatching { git?.logGraphFor(ref, limit) }.getOrElse { e ->
-                        // A throwing provider (IPC drop, repo mid-rebase) leaves a
-                        // message instead of an unhandled exception and a spinner
-                        // that just stops.
-                        _message.value = "Failed to load git history: ${e.message}"
-                        failed = true
-                        null
-                    } ?: emptyList()
-                // The HEAD decoration only names the checked-out branch while
-                // the graph IS HEAD's; another branch's tip carries no
-                // `HEAD ->`, and reading it there blanked the toolbar.
-                // Publish it BEFORE the graph: the name is part of reading
-                // this graph, and a consumer that observes a non-empty graph
-                // (the test does, on its own thread) must never see it
-                // without the branch name - the reverse order raced on CI.
-                if (ref == null) {
-                    branchOf(nodes).takeIf { it.isNotEmpty() }?.let { _currentBranch.value = it }
+            graphMutex.withLock {
+                // Superseded while queued: the newer request will do this work
+                // with a fresher view of the state, and it owns the spinner.
+                if (generation != graphGeneration.get()) return@withLock
+                try {
+                    val limit =
+                        if (reset) GRAPH_PAGE
+                        else (_graph.value.size + GRAPH_PAGE).coerceAtMost(GRAPH_MAX)
+                    val ref = _graphRef.value
+                    // Always logGraphFor, never logGraph: its default body
+                    // delegates to logGraph for a null ref, so on a host that
+                    // predates 1.0.90 the checked-out history still draws and only
+                    // the picker degrades.
+                    var failed = false
+                    val nodes =
+                        runCatching { git?.logGraphFor(ref, limit) }.getOrElse { e ->
+                            // A throwing provider (IPC drop, repo mid-rebase) leaves a
+                            // message instead of an unhandled exception and a spinner
+                            // that just stops.
+                            _message.value = "Failed to load git history: ${e.message}"
+                            failed = true
+                            null
+                        } ?: emptyList()
+                    // The HEAD decoration only names the checked-out branch while
+                    // the graph IS HEAD's; another branch's tip carries no
+                    // `HEAD ->`, and reading it there blanked the toolbar.
+                    // Publish it BEFORE the graph: the name is part of reading
+                    // this graph, and a consumer that observes a non-empty graph
+                    // (the test does, on its own thread) must never see it
+                    // without the branch name - the reverse order raced on CI.
+                    if (ref == null) {
+                        branchOf(nodes).takeIf { it.isNotEmpty() }?.let { _currentBranch.value = it }
+                    }
+                    // Fewer rows than requested means the provider reached the root
+                    // commit; anything else would page forever over the same list.
+                    // Never latched off a FAILED load: that path yields an empty
+                    // list too, and hiding "Load more" until the next reset is the
+                    // wrong answer to a dropped IPC call.
+                    if (!failed) _graphExhausted.value = nodes.size < limit
+                    _graph.value = nodes
+                    refreshReviewBases(nodes)
+                    // Only on a reset: paging deeper into the same history cannot
+                    // change which branches exist, and this is two extra `git
+                    // branch` invocations behind a lock every "Load more" would
+                    // otherwise pay for.
+                    if (reset) refreshBranchOptions()
+                } finally {
+                    // Only the newest load owns the spinner. A superseded one
+                    // clearing it would hide a load that is still running; the
+                    // newest is never superseded, so it always clears.
+                    if (generation == graphGeneration.get()) _graphBusy.value = false
                 }
-                // Fewer rows than requested means the provider reached the root
-                // commit; anything else would page forever over the same list.
-                // Never latched off a FAILED load: that path yields an empty
-                // list too, and hiding "Load more" until the next reset is the
-                // wrong answer to a dropped IPC call.
-                if (!failed) _graphExhausted.value = nodes.size < limit
-                _graph.value = nodes
-                refreshReviewBases(nodes)
-                // Only on a reset: paging deeper into the same history cannot
-                // change which branches exist, and this is two extra `git
-                // branch` invocations behind a lock every "Load more" would
-                // otherwise pay for.
-                if (reset) refreshBranchOptions()
-            } finally {
-                _graphBusy.value = false
             }
         }
     }
@@ -787,7 +858,7 @@ class CodebaseGitViewModel(
      * the inline budget, then hand the composed prompt to [onAgentReview].
      */
     fun startAgentReview() {
-        if (!_busy.compareAndSet(expect = false, update = true)) return
+        if (!_reviewing.compareAndSet(expect = false, update = true)) return
         scope.launch {
             try {
                 val status = _fileStatus.value
@@ -819,7 +890,7 @@ class CodebaseGitViewModel(
                 // a dead button: surface it like any other git failure.
                 _message.value = "Agent review failed: ${e.message ?: e::class.simpleName}"
             } finally {
-                _busy.value = false
+                _reviewing.value = false
             }
         }
     }

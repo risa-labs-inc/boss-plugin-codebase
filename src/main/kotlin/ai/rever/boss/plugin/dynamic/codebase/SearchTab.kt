@@ -65,12 +65,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 
 /**
  * The SEARCH tab of the codebase panel (P7) - global search & replace.
@@ -124,20 +128,46 @@ class CodebaseSearchViewModel(
     private val _searched = MutableStateFlow(false)
     val searched: StateFlow<Boolean> = _searched.asStateFlow()
 
-    private val _busy = MutableStateFlow(false)
-    val busy: StateFlow<Boolean> = _busy.asStateFlow()
+    /** A content scan is in flight. Set by [execute] only. */
+    private val _scanning = MutableStateFlow(false)
+
+    /**
+     * A dry run or a real replacement is in flight.
+     *
+     * Deliberately NOT the same flag as [_scanning]. One flag was doing two
+     * jobs: the replace path used it as a compare-and-set mutex, while
+     * [execute] set and cleared it unconditionally - so a scan finishing
+     * mid-write cleared the mutex, re-enabled the Replace button while the
+     * write was still running, and let a second click start a duplicate write.
+     */
+    private val _writing = MutableStateFlow(false)
+
+    /** Either kind of work - what the UI disables its controls on. */
+    val busy: StateFlow<Boolean> =
+        combine(_scanning, _writing) { scanning, writing -> scanning || writing }
+            .stateIn(scope, SharingStarted.Eagerly, false)
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
-    private val _dryRun = MutableStateFlow<ReplaceSummary?>(null)
-    val dryRun: StateFlow<ReplaceSummary?> = _dryRun.asStateFlow()
+    private val _dryRun = MutableStateFlow<PendingReplacement?>(null)
+    val dryRun: StateFlow<PendingReplacement?> = _dryRun.asStateFlow()
 
     /** True when the result set was truncated at [MAX_RESULTS]. */
     private val _capped = MutableStateFlow(false)
     val capped: StateFlow<Boolean> = _capped.asStateFlow()
 
+    /**
+     * The in-flight scan.
+     *
+     * Volatile: written from the UI thread (typing, Enter, the search icon)
+     * and from coroutines on [scope] (the refresh timer, the re-scan after a
+     * replacement), so a plain var gives the two no happens-before.
+     */
+    @Volatile
     private var searchJob: Job? = null
+
+    @Volatile
     private var refreshTimer: Job? = null
 
     fun setQuery(value: String) {
@@ -174,19 +204,30 @@ class CodebaseSearchViewModel(
     }
 
     /** Debounced re-run, so typing does not queue one scan per keystroke. */
-    private fun scheduleSearch() {
-        searchJob?.cancel()
-        searchJob =
-            scope.launch {
-                delay(DEBOUNCE_MS)
-                execute()
-            }
-    }
+    private fun scheduleSearch() = startScan(DEBOUNCE_MS)
 
     /** Run now (the Enter key / the search icon) with no debounce. */
-    fun runSearch() {
-        searchJob?.cancel()
-        searchJob = scope.launch { execute() }
+    fun runSearch() = startScan()
+
+    /**
+     * Start a scan, cancelling and WAITING FOR whichever one is already in
+     * flight.
+     *
+     * cancelAndJoin, not a bare cancel: [execute] clears [_scanning] in a
+     * finally, and cancel() returns before that finally has run. A bare
+     * cancel therefore let the replacement scan start while the previous one
+     * was still unwinding, and the old finally then cleared the flag out from
+     * under it. Joining first also means [execute] never overlaps itself, so
+     * it needs no mutex of its own.
+     */
+    private fun startScan(delayMs: Long = 0L) {
+        val previous = searchJob
+        searchJob =
+            scope.launch {
+                previous?.cancelAndJoin()
+                if (delayMs > 0) delay(delayMs)
+                execute()
+            }
     }
 
     /**
@@ -206,13 +247,14 @@ class CodebaseSearchViewModel(
             scope.launch {
                 while (isActive) {
                     delay(REFRESH_MS)
-                    if (_query.value.isNotBlank() && !_busy.value && searchJob?.isActive != true) {
-                        // Track the refresh in searchJob like every other scan:
-                        // a clear/cancel that lands mid-scan must be able to
-                        // reach it. A direct execute() here outran both, and
-                        // the scan published the old query's results - plus
-                        // _searched - a moment after the user cleared.
-                        searchJob = scope.launch { execute() }
+                    // Never while a replacement is in flight: the scan would
+                    // race the write it is meant to observe. Routed through
+                    // startScan like every other scan, so a clear or a newer
+                    // query can reach it - a direct execute() here outran both
+                    // and republished the old query's results, plus _searched,
+                    // a moment after the user cleared.
+                    if (_query.value.isNotBlank() && !_writing.value && searchJob?.isActive != true) {
+                        startScan()
                     }
                 }
             }
@@ -233,7 +275,7 @@ class CodebaseSearchViewModel(
             _capped.value = false
             return
         }
-        _busy.value = true
+        _scanning.value = true
         _message.value = null
         try {
             // Exclusion is the engine's, not ours. It used to be a filter over the
@@ -271,7 +313,7 @@ class CodebaseSearchViewModel(
             // report it in the status line instead of clearing the results.
             _message.value = e.message ?: "Search failed"
         } finally {
-            _busy.value = false
+            _scanning.value = false
         }
     }
 
@@ -312,47 +354,94 @@ class CodebaseSearchViewModel(
         return if (root.isEmpty()) path else root + separator + path
     }
 
+    /** The user-entered half of a replacement, as it stood at click time. */
+    private fun currentOperation(): ReplaceOperation =
+        ReplaceOperation(
+            query = _query.value,
+            replacement = _replacement.value,
+            isRegex = _isRegex.value,
+            caseSensitive = _caseSensitive.value,
+            wholeWord = _wholeWord.value,
+            files = matchedFiles(),
+        )
+
     /** Dry-run first, so the UI can show what will change before writing. */
     fun previewReplacement() {
         if (_query.value.isBlank() || _results.value.isEmpty()) return
+        if (_capped.value) {
+            // Replace All is refused while capped (the sheet disables the
+            // button), so measuring first buys nothing but a full-project
+            // scan. Say why now instead of after it.
+            _message.value =
+                "Too many matches to replace safely - narrow the search first."
+            return
+        }
+        // Snapshot the operation SYNCHRONOUSLY, before the launch: the search
+        // field stays live for the whole dry run, so reading it again later
+        // measures one operation and writes another.
+        val operation = currentOperation()
         // Set BEFORE launch: inside the coroutine the flag lands only once the
         // dispatcher runs the body, so two clicks in the same frame both saw
-        // busy = false and both passed the `enabled = … && !busy` guard.
-        if (!_busy.compareAndSet(expect = false, update = true)) return
+        // it false and both passed the `enabled = … && !busy` guard.
+        if (!_writing.compareAndSet(expect = false, update = true)) return
         scope.launch {
             try {
-                _dryRun.value =
+                val summary =
                     provider?.replaceInProject(
-                        query = _query.value,
-                        replacement = _replacement.value,
-                        files = matchedFiles(),
-                        isRegex = _isRegex.value,
-                        caseSensitive = _caseSensitive.value,
-                        wholeWord = _wholeWord.value,
+                        query = operation.query,
+                        replacement = operation.replacement,
+                        files = operation.files,
+                        isRegex = operation.isRegex,
+                        caseSensitive = operation.caseSensitive,
+                        wholeWord = operation.wholeWord,
                         dryRun = true,
                     )
+                // The user may have typed on while this ran. setQuery and
+                // setSearchOption null _dryRun precisely to retract the sheet;
+                // republishing here would put it back describing an operation
+                // they have already moved past.
+                if (summary != null && sameUserInput(operation)) {
+                    _dryRun.value = PendingReplacement(operation, summary)
+                }
             } catch (e: Exception) {
                 _message.value = e.message ?: "Preview failed"
             } finally {
-                _busy.value = false
+                _writing.value = false
             }
         }
     }
 
+    /** True while the query, replacement and flags still match [operation]. */
+    private fun sameUserInput(operation: ReplaceOperation): Boolean =
+        operation.query == _query.value &&
+            operation.replacement == _replacement.value &&
+            operation.isRegex == _isRegex.value &&
+            operation.caseSensitive == _caseSensitive.value &&
+            operation.wholeWord == _wholeWord.value
+
+    /**
+     * Write the replacement the sheet described.
+     *
+     * Every argument comes from the snapshot taken for the dry run, never from
+     * current state: the sheet says "Replace N occurrences across M files", and
+     * re-reading the live query here would let it write a DIFFERENT operation
+     * than the one the user was shown and confirmed.
+     */
     fun applyReplacement() {
-        val summary = _dryRun.value ?: return
+        val pending = _dryRun.value ?: return
         // See previewReplacement: a duplicate click here is a duplicate WRITE.
-        if (!_busy.compareAndSet(expect = false, update = true)) return
+        if (!_writing.compareAndSet(expect = false, update = true)) return
+        val operation = pending.operation
         scope.launch {
             try {
                 val applied =
                     provider?.replaceInProject(
-                        query = _query.value,
-                        replacement = _replacement.value,
-                        files = summary.files.map { it.path },
-                        isRegex = _isRegex.value,
-                        caseSensitive = _caseSensitive.value,
-                        wholeWord = _wholeWord.value,
+                        query = operation.query,
+                        replacement = operation.replacement,
+                        files = operation.files,
+                        isRegex = operation.isRegex,
+                        caseSensitive = operation.caseSensitive,
+                        wholeWord = operation.wholeWord,
                         dryRun = false,
                     )
                 _message.value = describeReplacement(applied)
@@ -360,10 +449,10 @@ class CodebaseSearchViewModel(
             } catch (e: Exception) {
                 _message.value = e.message ?: "Replacement failed"
             } finally {
-                _busy.value = false
+                _writing.value = false
             }
             // The files on disk changed; re-scan so the tree matches them.
-            execute()
+            startScan()
         }
     }
 
@@ -433,6 +522,30 @@ class CodebaseSearchViewModel(
 }
 
 enum class SearchToggle { REGEX, CASE, WORD }
+
+/**
+ * The user-entered half of a replacement, frozen at the moment the user asked
+ * to preview it.
+ *
+ * Its own type so the dry run and the write cannot drift apart: the search
+ * field stays live while the dry run walks the project, so anything read from
+ * current state at write time may describe a different operation than the one
+ * the confirmation sheet measured and the user approved.
+ */
+data class ReplaceOperation(
+    val query: String,
+    val replacement: String,
+    val isRegex: Boolean,
+    val caseSensitive: Boolean,
+    val wholeWord: Boolean,
+    val files: List<String>,
+)
+
+/** A measured replacement awaiting confirmation, with the operation it measured. */
+data class PendingReplacement(
+    val operation: ReplaceOperation,
+    val summary: ReplaceSummary,
+)
 
 /** One file's matches; [path] is project-relative, as the provider returns it. */
 data class FileMatches(val path: String, val matches: List<FileMatch>)
@@ -688,9 +801,9 @@ fun CodebaseSearchContent(
         }
     }
 
-    dryRun?.let { summary ->
+    dryRun?.let { pending ->
         ConfirmReplaceSheet(
-            summary = summary,
+            summary = pending.summary,
             busy = busy,
             capped = capped,
             onDismiss = { viewModel.dismissPreview() },

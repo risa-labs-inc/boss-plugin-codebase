@@ -34,8 +34,8 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Inventory2
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.RememberObserver
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -110,32 +110,38 @@ class CodebaseComponent(
         var selectedTab by remember { mutableStateOf(CodebaseTab.FILES) }
 
         // Both view models own a coroutine scope, so they are created once and
-        // cancelled when the panel leaves composition. They used to be built
-        // by assigning to state *during* composition and never disposed, which
-        // leaked a scope (and a 15s git poll) per panel open.
-        val searchViewModel = remember {
-            CodebaseSearchViewModel(
-                provider = searchProvider,
-                splitViewOperations = splitViewOperations,
-                getProjectPath = getProjectPath,
-            )
-        }
-        val gitViewModel = remember {
-            CodebaseGitViewModel(
-                git = gitDataProvider,
-                getProjectPath = getProjectPath,
-                getWindowId = getWindowId,
-                onAgentReview = onAgentReview,
-                aiGateway = aiGateway,
-                aiUnavailable = aiUnavailable,
-            )
-        }
-        DisposableEffect(Unit) {
-            onDispose {
-                searchViewModel.dispose()
-                gitViewModel.dispose()
-            }
-        }
+        // released when the panel leaves composition. They used to be built by
+        // assigning to state *during* composition and never disposed, which
+        // leaked a scope (and a git poll) per panel open.
+        //
+        // Held through [DisposedWhenGone] rather than paired with a
+        // DisposableEffect: a composition ABANDONED before it is applied runs
+        // no effects at all, so onDispose would never fire and the scope would
+        // outlive a panel that never appeared. RememberObserver.onAbandoned is
+        // the only callback that covers that path.
+        val searchViewModel =
+            remember {
+                DisposedWhenGone(
+                    CodebaseSearchViewModel(
+                        provider = searchProvider,
+                        splitViewOperations = splitViewOperations,
+                        getProjectPath = getProjectPath,
+                    ),
+                ) { it.dispose() }
+            }.value
+        val gitViewModel =
+            remember {
+                DisposedWhenGone(
+                    CodebaseGitViewModel(
+                        git = gitDataProvider,
+                        getProjectPath = getProjectPath,
+                        getWindowId = getWindowId,
+                        onAgentReview = onAgentReview,
+                        aiGateway = aiGateway,
+                        aiUnavailable = aiUnavailable,
+                    ),
+                ) { it.dispose() }
+            }.value
 
         // Three separate collectors on purpose. A StateFlow collect never
         // completes, so chaining these in one LaunchedEffect body left every
@@ -235,7 +241,6 @@ class CodebaseComponent(
     }
 }
 
-
 /**
  * The project the panel is showing, above the tab strip - so which directory
  * you are in is answered without switching to FILES. Name on top, the path
@@ -289,6 +294,26 @@ private fun CodebaseProjectHeader(projectPath: String?) {
             }
         }
     }
+}
+
+/**
+ * Owns a value that holds a CoroutineScope, and releases it however the
+ * composition ends.
+ *
+ * [onForgotten] is the ordinary path (the panel closed). [onAbandoned] is the
+ * one a `DisposableEffect` cannot reach: a composition thrown away before it
+ * is applied runs no effects, so the scope - and the pollers hanging off it -
+ * would outlive a panel that never appeared.
+ */
+private class DisposedWhenGone<T>(
+    val value: T,
+    private val dispose: (T) -> Unit,
+) : RememberObserver {
+    override fun onRemembered() = Unit
+
+    override fun onForgotten() = dispose(value)
+
+    override fun onAbandoned() = dispose(value)
 }
 
 /**

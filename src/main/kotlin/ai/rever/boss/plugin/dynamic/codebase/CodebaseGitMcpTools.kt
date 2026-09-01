@@ -32,6 +32,16 @@ import kotlinx.coroutines.withTimeoutOrNull
  * - project_replace (writing file contents) requires its own "project.replace".
  * Admins bypass all of the above.
  *
+ * Refs and paths are treated differently on purpose. An LLM-supplied REF is
+ * checked here with [GitBranchModel.isSafeRef], because a ref is passed to git
+ * ahead of the `--` separator and a leading dash would be read as a flag. An
+ * LLM-supplied PATH is not, and does not need to be: the host runs every git
+ * command as `ProcessBuilder("git", *args)` - argv, never a shell - puts `--`
+ * before every pathspec (`add -- <path>`, `restore --staged -- <paths>`,
+ * `restore -- <path>`, `diff … -- <path>`), and sets `GIT_LITERAL_PATHSPECS=1`
+ * so pathspec magic like `:/` cannot expand either. Re-checking paths here
+ * would only reject the legal ones that begin with a dash.
+ *
  * Registered alongside the existing codebase_* tools in
  * [CodebaseDynamicPlugin.register]; auto-removed on disable/unload.
  */
@@ -46,6 +56,12 @@ internal class CodebaseGitMcpToolProvider(
      */
     private val git: () -> GitDataProvider?,
     private val search: () -> ProjectSearchProvider?,
+    /**
+     * How long [awaitFresh] waits for a provider flow to move after a
+     * `refresh*()`. Injectable so tests can pin the fallback path without
+     * paying the real settle time on every call.
+     */
+    private val flowSettleMs: Long = FLOW_SETTLE_MS,
 ) : McpToolProvider {
 
     private val gitProvider: GitDataProvider? get() = git()
@@ -409,7 +425,7 @@ internal class CodebaseGitMcpToolProvider(
     ): T {
         val before = flow.value
         refresh()
-        return withTimeoutOrNull(FLOW_SETTLE_MS) { flow.first { it != before } }
+        return withTimeoutOrNull(flowSettleMs) { flow.first { it != before } }
             ?: flow.value
     }
 

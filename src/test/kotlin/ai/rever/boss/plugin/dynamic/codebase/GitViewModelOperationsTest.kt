@@ -117,6 +117,9 @@ class GitViewModelOperationsTest {
             git = provider,
             onAgentReview = onReview,
             getProjectPath = { "/repo" },
+            // The real 2 s settle would be paid on every construction; the
+            // fakes never move isGitRepository, so it always times out.
+            repoFlagSettleMs = 50L,
         ).also { viewModels += it }
 
     private fun awaitUntil(what: String, predicate: () -> Boolean) {
