@@ -253,7 +253,10 @@ internal class CodebaseGitMcpToolProvider(
             description = "Replace occurrences in an EXPLICIT list of files - never project-wide. " +
                 "dryRun defaults to true (counts what would change without writing). Open buffers " +
                 "are edited through the editor's undoable path; closed files are written to disk. " +
-                "For regex queries the replacement supports $1..$9 capture references.",
+                "For regex queries the replacement supports $1..$9 capture references. " +
+                "Replacement is NOT limited by the search caps: a file whose matches were " +
+                "truncated in the search results can have more replaced than were displayed, " +
+                "so the reported count is the applied count, not the displayed one.",
             inputSchema = REPLACE_SCHEMA,
             readOnly = false,
             requiredPermissions = listOf(PROJECT_REPLACE),
