@@ -7,13 +7,27 @@ import ai.rever.boss.plugin.api.McpToolHandler
 import ai.rever.boss.plugin.api.McpToolProvider
 import ai.rever.boss.plugin.api.McpToolResult
 import ai.rever.boss.plugin.api.ProjectSearchProvider
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The git / project-search MCP tools absorbed from the retired
  * git-status, git-log and search-replace plugins (P7).
  *
- * Tool names, schemas and RBAC are carried over verbatim - the P6.2 tool
- * tiers pin these names, so the provider move is transparent to Atlas.
+ * Tool names and schemas are carried over verbatim so the move is transparent
+ * to agents that already know them. RBAC is deliberate, in three tiers:
+ * - read-only tools (git_status, git_log, git_diff*, project_search) carry no
+ *   permission and are open to every local agent session;
+ * - every tool that mutates git state (stage/unstage/discard/checkout/
+ *   cherry-pick/revert) requires [GIT_WRITE]. An empty requirement list is NOT
+ *   a neutral default here: the host's MCP registry exposes such a tool to
+ *   every session, including one where no user is signed in, so the
+ *   irreversible git_discard must sit behind a grant, exactly like
+ *   project_replace sits behind project.replace;
+ * - project_replace (writing file contents) requires its own "project.replace".
+ * Admins bypass all of the above.
+ *
  * Registered alongside the existing codebase_* tools in
  * [CodebaseDynamicPlugin.register]; auto-removed on disable/unload.
  */
@@ -32,53 +46,59 @@ internal class CodebaseGitMcpToolProvider(
             readOnly = true,
             handler = McpToolHandler { status() },
         ),
-        McpToolDefinition(
+        McpToolDefinition.withRbac(
             name = "git_stage",
             description = "Stage a file for commit in the current project.",
             inputSchema = PATH_SCHEMA,
             readOnly = false,
+            requiredPermissions = listOf(GIT_WRITE),
             handler = McpToolHandler { args ->
                 val path = args.path() ?: return@McpToolHandler missing("path")
                 op("Staged", gitProvider?.stage(path))
             },
         ),
-        McpToolDefinition(
+        McpToolDefinition.withRbac(
             name = "git_unstage",
             description = "Unstage a previously staged file in the current project.",
             inputSchema = PATH_SCHEMA,
             readOnly = false,
+            requiredPermissions = listOf(GIT_WRITE),
             handler = McpToolHandler { args ->
                 val path = args.path() ?: return@McpToolHandler missing("path")
                 op("Unstaged", gitProvider?.unstage(path))
             },
         ),
-        McpToolDefinition(
+        McpToolDefinition.withRbac(
             name = "git_stage_all",
             description = "Stage all changed files in the current project.",
             readOnly = false,
+            requiredPermissions = listOf(GIT_WRITE),
             handler = McpToolHandler { op("Staged all", gitProvider?.stageAll()) },
         ),
-        McpToolDefinition(
+        McpToolDefinition.withRbac(
             name = "git_unstage_all",
             description = "Unstage all staged files in the current project.",
             readOnly = false,
+            requiredPermissions = listOf(GIT_WRITE),
             handler = McpToolHandler { op("Unstaged all", gitProvider?.unstageAll()) },
         ),
-        McpToolDefinition(
+        McpToolDefinition.withRbac(
             name = "git_discard",
             description = "Discard working-tree changes to a file (irreversible). Use with care.",
             inputSchema = PATH_SCHEMA,
             readOnly = false,
+            requiredPermissions = listOf(GIT_WRITE),
             handler = McpToolHandler { args ->
                 val path = args.path() ?: return@McpToolHandler missing("path")
                 op("Discarded", gitProvider?.discardChanges(path))
             },
         ),
-        McpToolDefinition(
+        McpToolDefinition.withRbac(
             name = "git_checkout",
             description = "Checkout a commit, branch, or tag in the current project.",
             inputSchema = REF_SCHEMA,
             readOnly = false,
+            requiredPermissions = listOf(GIT_WRITE),
             handler = McpToolHandler { args ->
                 val ref = args.string("ref")
                     ?: return@McpToolHandler missing("ref")
@@ -106,7 +126,14 @@ internal class CodebaseGitMcpToolProvider(
             handler = McpToolHandler { args ->
                 val names = gitProvider?.diffNames(args.boolean("staged") ?: false) ?: emptyList()
                 if (names.isEmpty()) McpToolResult("No changes.")
-                else McpToolResult(names.joinToString("\n") { "${(it.indexStatus ?: it.workTreeStatus)?.name ?: "?"} ${it.path}" })
+                else
+                    McpToolResult(
+                        capDiff(
+                            names.joinToString("\n") {
+                                "${(it.indexStatus ?: it.workTreeStatus)?.name ?: "?"} ${it.path}"
+                            },
+                        ),
+                    )
             },
         ),
         McpToolDefinition(
@@ -142,28 +169,30 @@ internal class CodebaseGitMcpToolProvider(
             inputSchema = LIMIT_SCHEMA,
             readOnly = true,
             handler = McpToolHandler { args ->
+                val provider = gitProvider ?: return@McpToolHandler unavailableGit()
                 val limit = args.int("limit") ?: 30
-                gitProvider?.refreshLog(limit)
-                val log = gitProvider?.commitLog?.value.orEmpty().take(limit)
+                val log = awaitFresh(provider.commitLog) { provider.refreshLog(limit) }.take(limit)
                 if (log.isEmpty()) McpToolResult("No commits.")
                 else McpToolResult(log.joinToString("\n") { "${it.shortHash} ${it.subject} (${it.author})" })
             },
         ),
-        McpToolDefinition(
+        McpToolDefinition.withRbac(
             name = "git_cherry_pick",
             description = "Cherry-pick a commit onto the current branch of the current project.",
             inputSchema = HASH_SCHEMA,
             readOnly = false,
+            requiredPermissions = listOf(GIT_WRITE),
             handler = McpToolHandler { args ->
                 val hash = args.hash()
                 if (hash == null) missing("hash") else op("Cherry-picked $hash", gitProvider?.cherryPick(hash))
             },
         ),
-        McpToolDefinition(
+        McpToolDefinition.withRbac(
             name = "git_revert",
             description = "Revert a commit in the current project (creates a new revert commit).",
             inputSchema = HASH_SCHEMA,
             readOnly = false,
+            requiredPermissions = listOf(GIT_WRITE),
             handler = McpToolHandler { args ->
                 val hash = args.hash()
                 if (hash == null) missing("hash") else op("Reverted $hash", gitProvider?.revert(hash))
@@ -222,10 +251,7 @@ internal class CodebaseGitMcpToolProvider(
         val query = args.string("query") ?: return missing("query")
         val replacement = args.string("replacement") ?: return missing("replacement")
         val files =
-            args.string("files")
-                ?.split(",", "\n")
-                ?.map { it.trim() }
-                ?.filter { it.isNotEmpty() }
+            args.string("files")?.let(::parseFiles)
                 ?: return missing("files")
         if (files.isEmpty()) return McpToolResult("Argument 'files' must not be empty.", isError = true)
         val dryRun = args.boolean("dryRun") ?: true
@@ -249,10 +275,88 @@ internal class CodebaseGitMcpToolProvider(
         return McpToolResult(out)
     }
 
+    /**
+     * `files` arrives either as a JSON array of path strings (preferred: a path
+     * may legally contain a comma, which the flat form cannot express) or as the
+     * flat comma/newline-separated form. The array form is parsed by a small
+     * strict scanner (the plugin's classpath carries no JSON library); anything
+     * the scanner does not recognize falls back to flat splitting.
+     */
+    private fun parseFiles(raw: String): List<String> {
+        val trimmed = raw.trim()
+        if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            parseJsonStringArray(trimmed)?.let { return it }
+        }
+        return trimmed
+            .split(",", "\n")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+    }
+
+    /**
+     * Strict scan of `["a", "b, c", ...]`: double-quoted elements, backslash
+     * escapes, commas only between elements. Returns null for anything else
+     * (nesting, bare tokens, unbalanced quotes) so the caller falls back to the
+     * flat form rather than guessing at a partial parse.
+     */
+    private fun parseJsonStringArray(text: String): List<String>? {
+        val body = text.substring(1, text.length - 1)
+        val items = mutableListOf<String>()
+        val current = StringBuilder()
+        var inString = false
+        var escaped = false
+        for (c in body) {
+            when {
+                escaped -> {
+                    current.append(c)
+                    escaped = false
+                }
+                inString && c == '\\' -> {
+                    current.append(c)
+                    escaped = true
+                }
+                c == '"' -> inString = !inString
+                c == ',' && !inString -> {
+                    items += current.toString().trim().removeSurrounding("\"")
+                    current.clear()
+                }
+                !inString && c.isWhitespace() -> Unit
+                inString -> current.append(c)
+                else -> return null
+            }
+        }
+        if (inString || escaped) return null
+        items += current.toString().trim().removeSurrounding("\"")
+        return if (items.all { it.isNotEmpty() }) items else null
+    }
+
+    /**
+     * Runs [refresh] and then returns the first value of [flow] that differs from
+     * its pre-refresh snapshot, waiting at most [FLOW_SETTLE_MS]. Falls back to the
+     * latest value if no new emission arrives (a no-op refresh emits nothing).
+     *
+     * The provider refreshes asynchronously - and over IPC when this plugin runs
+     * out-of-process - so sampling `flow.value` right after `refreshStatus()` /
+     * `refreshLog()` returns the state from BEFORE the refresh. An agent calling
+     * `git_status` right after `git_stage` would get the pre-stage tree and feed a
+     * wrong premise into its next step. In-process the host publishes before
+     * `refresh*()` returns, so the wait resolves immediately. When the refresh is a
+     * no-op the StateFlow conflates (no emission) and the wait times out, falling
+     * back to the latest value - which is already correct in that case.
+     */
+    private suspend fun <T : Any> awaitFresh(
+        flow: StateFlow<T>,
+        refresh: suspend () -> Unit,
+    ): T {
+        val before = flow.value
+        refresh()
+        return withTimeoutOrNull(FLOW_SETTLE_MS) { flow.first { it != before } }
+            ?: flow.value
+    }
+
     private suspend fun status(): McpToolResult {
         val provider = gitProvider ?: return unavailableGit()
-        provider.refreshStatus()
-        val status = provider.fileStatus.value
+        val status = awaitFresh(provider.fileStatus) { provider.refreshStatus() }
         if (status.isEmpty()) return McpToolResult("Working tree clean.")
         return McpToolResult(
             status.joinToString("\n") { s ->
@@ -347,6 +451,15 @@ internal class CodebaseGitMcpToolProvider(
     private companion object {
         const val MAX_RESULT_LINES = 100
 
+        /** Permission required by every git tool that mutates repository state. */
+        const val GIT_WRITE = "git.write"
+
+        /**
+         * How long [awaitFresh] waits, after calling a `refresh*()` method, for
+         * the provider's flow to move off its pre-refresh value.
+         */
+        const val FLOW_SETTLE_MS = 2_000L
+
         /** Ceiling on a single diff tool result; whole-file-context diffs are otherwise unbounded. */
         const val MAX_DIFF_CHARS = 64_000
 
@@ -371,6 +484,6 @@ internal class CodebaseGitMcpToolProvider(
         const val SEARCH_SCHEMA =
             """{"type":"object","properties":{"query":{"type":"string","description":"Literal text, or a regular expression when isRegex=true."},"pathPattern":{"type":"string","description":"Optional glob filter on the project-relative path (e.g. **/*.kt)."},"isRegex":{"type":"boolean","description":"Treat query as a regular expression (default false)."},"caseSensitive":{"type":"boolean","description":"Case-sensitive matching (default false)."},"wholeWord":{"type":"boolean","description":"Whole-word match only (default false)."},"maxResults":{"type":"integer","description":"Hard cap on returned matches (default 100)."}},"required":["query"]}"""
         const val REPLACE_SCHEMA =
-            """{"type":"object","properties":{"query":{"type":"string","description":"Literal text, or a regular expression when isRegex=true."},"replacement":{"type":"string","description":"Replacement text; ${'$'}1..${'$'}9 capture references for regex queries."},"files":{"type":"string","description":"Comma-separated file paths to touch (project-relative, or absolute inside the project). Paths outside the project are refused. Never empty."},"isRegex":{"type":"boolean","description":"Treat query as a regular expression (default false)."},"caseSensitive":{"type":"boolean","description":"Case-sensitive matching (default false)."},"wholeWord":{"type":"boolean","description":"Whole-word match only (default false)."},"dryRun":{"type":"boolean","description":"Count without writing (default true)."}},"required":["query","replacement","files"]}"""
+            """{"type":"object","properties":{"query":{"type":"string","description":"Literal text, or a regular expression when isRegex=true."},"replacement":{"type":"string","description":"Replacement text; ${'$'}1..${'$'}9 capture references for regex queries."},"files":{"type":"string","description":"Comma-separated file paths to touch, or a JSON array of path strings - use the array form when a path contains a comma. Project-relative, or absolute inside the project. Paths outside the project are refused. Never empty."},"isRegex":{"type":"boolean","description":"Treat query as a regular expression (default false)."},"caseSensitive":{"type":"boolean","description":"Case-sensitive matching (default false)."},"wholeWord":{"type":"boolean","description":"Whole-word match only (default false)."},"dryRun":{"type":"boolean","description":"Count without writing (default true)."}},"required":["query","replacement","files"]}"""
     }
 }

@@ -580,9 +580,6 @@ private fun GitAgentReview(
     busy: Boolean,
     onFindIssues: () -> Unit,
 ) {
-    var approachOpen by remember { mutableStateOf(false) }
-    var branchOpen by remember { mutableStateOf(false) }
-
     Column(
         modifier = Modifier
             .fillMaxWidth()

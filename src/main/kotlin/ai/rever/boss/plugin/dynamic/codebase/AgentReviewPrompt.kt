@@ -25,12 +25,18 @@ object AgentReviewPrompt {
         instructions: String = "",
         /** Quick keeps it to a short pass; Deep asks for a thorough one. */
         deep: Boolean = false,
-        /** The ref the change is being reviewed against, e.g. "main". */
+        /** The ref the change is being reviewed toward, e.g. "main". Context for
+         * the agent only - the attached diff is the uncommitted change, never
+         * a diff against this ref.
+         */
         baseRef: String = "",
     ): String {
         val sb = StringBuilder()
         if (baseRef.isNotBlank()) {
-            sb.appendLine("Review this branch's changes against `$baseRef` (index + working tree).")
+            sb.appendLine(
+                "Review these uncommitted changes (index + working tree) ahead of " +
+                    "landing them on `$baseRef`.",
+            )
         } else {
             sb.appendLine("Review the uncommitted changes in this project (index + working tree vs HEAD).")
         }
@@ -54,9 +60,7 @@ object AgentReviewPrompt {
         sb.appendLine()
 
         if (staged.isEmpty() && unstaged.isEmpty()) {
-            sb.appendLine("There are no uncommitted changes in ")
-            sb.appendLine(projectPath)
-            sb.appendLine(".")
+            sb.appendLine("There are no uncommitted changes in $projectPath.")
             return sb.toString().trimEnd()
         }
 

@@ -27,7 +27,7 @@ import kotlinx.coroutines.launch
 class CodebaseDynamicPlugin : DynamicPlugin {
     override val pluginId: String = "ai.rever.boss.plugin.dynamic.codebase"
     override val displayName: String = "Codebase (Dynamic)"
-    override val version: String = "1.6.0"
+    override val version: String = readManifestVersion()
     override val description: String = "Files, search & replace, and git status/log/graph for the current project"
     override val author: String = "Risa Labs"
     override val url: String = "https://github.com/risa-labs-inc/boss-plugin-codebase"
@@ -151,8 +151,53 @@ class CodebaseDynamicPlugin : DynamicPlugin {
         )
     }
 
+    /**
+     * Drop every host reference on disable/unload. Without this the plugin
+     * keeps a strong reference to [PluginContext] - and to every provider
+     * hanging off it - for the life of the process, which is exactly the leak
+     * AGENTS.md names as the reason the entry-point contract has a dispose().
+     */
+    override fun dispose() {
+        fileSystemDataProvider = null
+        contextMenuProvider = null
+        directoryPickerProvider = null
+        splitViewOperations = null
+        projectDataProvider = null
+        gitDataProvider = null
+        searchProvider = null
+        pluginScope = null
+        getWindowId = { null }
+        getProjectPath = { null }
+        publishReview = { _ -> }
+        pluginContext = null
+    }
+
     companion object {
         const val EVENT_ATLAS_REVIEW = "atlas.review"
+
+        /** Last-resort value when the bundled manifest cannot be read. */
+        private const val FALLBACK_VERSION = "0.0.0"
+
+        /**
+         * The version from the bundled plugin.json, whose version field the
+         * build's processResources filter syncs from build.gradle.kts. Reading
+         * it here removes the hand-maintained third copy of the version -
+         * which has drifted before (the field said 1.0.9 while gradle said
+         * 1.5.8).
+         */
+        private fun readManifestVersion(): String {
+            val stream =
+                CodebaseDynamicPlugin::class.java.classLoader
+                    ?.getResourceAsStream("META-INF/boss-plugin/plugin.json")
+                    ?: return FALLBACK_VERSION
+            return stream.use { input ->
+                Regex(""""version"\s*:\s*"([^"]+)\"""")
+                    .find(input.readBytes().decodeToString())
+                    ?.groupValues
+                    ?.get(1)
+                    ?: FALLBACK_VERSION
+            }
+        }
     }
 }
 

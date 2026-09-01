@@ -1,5 +1,6 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -15,8 +16,22 @@ import kotlin.test.assertTrue
  */
 class SearchPathTest {
 
-    private fun vm(root: String?) =
-        CodebaseSearchViewModel(provider = null, splitViewOperations = null, getProjectPath = { root })
+    private val viewModels = mutableListOf<CodebaseSearchViewModel>()
+
+    @AfterTest
+    fun disposeAll() {
+        // CodebaseSearchViewModel starts a CoroutineScope in its constructor;
+        // without this, each vm() below leaks a scope for the JVM's lifetime.
+        viewModels.forEach { it.dispose() }
+        viewModels.clear()
+    }
+
+    private fun vm(root: String?): CodebaseSearchViewModel {
+        val viewModel =
+            CodebaseSearchViewModel(provider = null, splitViewOperations = null, getProjectPath = { root })
+        viewModels += viewModel
+        return viewModel
+    }
 
     // ---- relative -> absolute --------------------------------------------
 

@@ -188,7 +188,7 @@ class PanelUiLogicTest {
                 deep = true,
                 baseRef = "main",
             )
-        assertTrue(prompt.contains("against `main`"), prompt.take(200))
+        assertTrue(prompt.contains("ahead of landing them on `main`"), prompt.take(200))
         assertTrue(prompt.contains("Go deep"), prompt.take(400))
         assertTrue(prompt.contains("focus on the parser"), prompt.take(600))
     }

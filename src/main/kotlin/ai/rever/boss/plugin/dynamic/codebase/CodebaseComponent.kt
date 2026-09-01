@@ -54,6 +54,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** The three top tabs of the codebase panel (P7). */
 enum class CodebaseTab(val label: String, val storageKey: String) {
@@ -136,16 +137,25 @@ class CodebaseComponent(
         }
 
         LaunchedEffect(Unit) {
-            val saved = storage?.getString("codebase.tab")
+            // The reads are blocking I/O - and the tab-switch write below is
+            // already off the UI thread, so keep this path consistent: a
+            // blocking storage implementation must not stall the first frame.
+            val saved = withContext(Dispatchers.Default) { storage?.getString("codebase.tab") }
             selectedTab = CodebaseTab.fromStorage(saved)
             // The change-group layout was a `remember` inside the GIT tab, so
             // it reset on every hop to FILES and back. It is a preference;
             // persist it beside the selected tab. Seeded BEFORE the collector
             // below starts, so the load is not immediately overwritten.
             gitViewModel.setChangeLayout(
-                GitChangeLayout.fromStorage(storage?.getString("codebase.gitLayout")),
+                withContext(Dispatchers.Default) {
+                    GitChangeLayout.fromStorage(storage?.getString("codebase.gitLayout"))
+                },
             )
-            gitViewModel.changeLayout.collect { storage?.putString("codebase.gitLayout", it.storageKey) }
+            gitViewModel.changeLayout.collect { layout ->
+                withContext(Dispatchers.Default) {
+                    storage?.putString("codebase.gitLayout", layout.storageKey)
+                }
+            }
         }
         // The selected project is exposed as a plain getter, not a flow, so it
         // is sampled: the header has to follow a project switch made anywhere
@@ -258,8 +268,12 @@ internal fun collapseHome(path: String): String {
     }
 }
 
-/** How often the selected project is sampled for the header. */
-private const val PROJECT_POLL_MS = 1_000L
+/**
+ * How often the selected project is sampled for the header. The getter changes
+ * at most once per project switch (minutes apart at best), so 1s only added IPC
+ * churn - 5s is indistinguishable in practice.
+ */
+private const val PROJECT_POLL_MS = 5_000L
 
 /**
  * The panel's tab strip: icon + label while the panel is wide enough, icons

@@ -388,7 +388,7 @@ class CodebaseSearchViewModel(
         scope.cancel()
     }
 
-    private companion object {
+    companion object {
         const val MAX_RESULTS = 500
         const val DEBOUNCE_MS = 250L
 
@@ -653,6 +653,7 @@ fun CodebaseSearchContent(
         ConfirmReplaceSheet(
             summary = summary,
             busy = busy,
+            capped = capped,
             onDismiss = { viewModel.dismissPreview() },
             onApply = { viewModel.applyReplacement() },
         )
@@ -896,6 +897,11 @@ private const val LEAD_CONTEXT = 12
 private fun ConfirmReplaceSheet(
     summary: ReplaceSummary,
     busy: Boolean,
+    /** True when the search result was truncated at MAX_RESULTS. While capped,
+     *  "replace all" would silently cover only the listed files, so the apply
+     *  button is disabled and the truncation is stated plainly.
+     */
+    capped: Boolean,
     onDismiss: () -> Unit,
     onApply: () -> Unit,
 ) {
@@ -926,6 +932,16 @@ private fun ConfirmReplaceSheet(
                 fontSize = CodebaseMetrics.SecondaryText,
                 color = CodebasePalette.Secondary,
             )
+            if (capped) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "The search was capped at ${CodebaseSearchViewModel.MAX_RESULTS} matches, " +
+                        "so this would replace only the listed files - not every match. " +
+                        "Narrow the search (glob / exclude) to widen the set.",
+                    fontSize = CodebaseMetrics.SecondaryText,
+                    color = CodebasePalette.Warn,
+                )
+            }
             Spacer(Modifier.height(12.dp))
             Row(
                 horizontalArrangement = Arrangement.End,
@@ -941,7 +957,7 @@ private fun ConfirmReplaceSheet(
                 CodebasePrimaryButton(
                     label = "Replace",
                     onClick = onApply,
-                    enabled = !busy && summary.totalReplacements > 0,
+                    enabled = !busy && !capped && summary.totalReplacements > 0,
                     modifier = Modifier.width(90.dp),
                 )
             }

@@ -235,7 +235,16 @@ class CodebaseGitViewModel(
             scope.launch {
                 while (isActive) {
                     delay(REFRESH_MS)
-                    git.refreshStatus()
+                    // A throwing provider (IPC drop, repo mid-rebase) must not
+                    // end the polling loop: catch and let the next tick retry.
+                    // The UI symptom - status stops moving - stays visible, and
+                    // any explicit operation surfaces the error via op().
+                    try {
+                        git.refreshStatus()
+                    } catch (e: Exception) {
+                        // Deliberately silent here: surfacing on every 5 s tick
+                        // would overwrite real operation results.
+                    }
                 }
             }
     }
@@ -263,7 +272,14 @@ class CodebaseGitViewModel(
                 // delegates to logGraph for a null ref, so on a host that
                 // predates 1.0.90 the checked-out history still draws and only
                 // the picker degrades.
-                val nodes = git?.logGraphFor(ref, limit) ?: emptyList()
+                val nodes =
+                    runCatching { git?.logGraphFor(ref, limit) }.getOrElse { e ->
+                        // A throwing provider (IPC drop, repo mid-rebase) leaves a
+                        // message instead of an unhandled exception and a spinner
+                        // that just stops.
+                        _message.value = "Failed to load git history: ${e.message}"
+                        null
+                    } ?: emptyList()
                 _graph.value = nodes
                 // The HEAD decoration only names the checked-out branch while
                 // the graph IS HEAD's; another branch's tip carries no
@@ -360,8 +376,6 @@ class CodebaseGitViewModel(
 
     fun discard(path: String) = op { git?.discardChanges(path) }
 
-    private suspend fun GitDataProvider.discard(path: String) = discardChanges(path)
-
     fun stageAll() = op { git?.stageAll() }
 
     /**
@@ -374,7 +388,7 @@ class CodebaseGitViewModel(
      */
     fun stagePaths(paths: List<String>) = batch(paths) { git?.stage(it) }
 
-    fun discardPaths(paths: List<String>) = batch(paths) { git?.discard(it) }
+    fun discardPaths(paths: List<String>) = batch(paths) { git?.discardChanges(it) }
 
     fun unstagePaths(paths: List<String>) = batch(paths) { git?.unstage(it) }
 
@@ -480,7 +494,13 @@ class CodebaseGitViewModel(
             _message.value = it
             return
         }
-        val gateway = aiGateway() ?: return
+        val gateway =
+            aiGateway() ?: run {
+                // aiUnavailable() said ready but the gateway is gone now (unloaded
+                // in between): a silent return would read as a dead button.
+                _message.value = "AI is unavailable."
+                return
+            }
         scope.launch {
             _generating.value = true
             _message.value = null
@@ -508,7 +528,6 @@ class CodebaseGitViewModel(
         }
     }
 
-    /** Unified diff text for [files], truncated to [budget] characters. */
     /**
      * A compact unified-ish diff for a PROMPT: changed lines plus [context] lines
      * around each change, with runs of unchanged text collapsed to an ellipsis.
@@ -551,13 +570,23 @@ class CodebaseGitViewModel(
         return sb.toString()
     }
 
+    /**
+     * Per-file compact diffs for [files], concatenated with a `--- path` header
+     * each, truncated to [budget] characters total. Used to build the prompt
+     * payload for Agent Review and commit-message generation.
+     */
     private suspend fun collectDiff(files: List<GitFileStatusData>, budget: Int): String {
         val provider = git ?: return ""
         val sb = StringBuilder()
         for (f in files.distinctBy { it.path }.take(MAX_INLINE_FILES)) {
+            // A throwing provider (IPC drop, repo mid-rebase) on ONE file must not
+            // kill the whole collection: skip that file, keep the rest. The file
+            // stays in the listing above, and the agent can fetch it via git_diff.
             val diff =
-                provider.diffFile(f.path, staged = f.isStaged && !f.isUnstaged).firstOrNull()
-                    ?: provider.diffFile(f.path, staged = false).firstOrNull()
+                runCatching { provider.diffFile(f.path, staged = f.isStaged && !f.isUnstaged) }
+                    .getOrNull()?.firstOrNull()
+                    ?: runCatching { provider.diffFile(f.path, staged = false) }
+                        .getOrNull()?.firstOrNull()
                     ?: continue
             // compactDiff, not rawUnified: the host generates diffs with whole-file
             // context (-U100000) for the viewer, so rawUnified is the entire file. Fed
@@ -588,23 +617,13 @@ class CodebaseGitViewModel(
 
                 var diffText: String? = null
                 if (git != null) {
-                    val sb = StringBuilder()
-                    for (s in (staged + unstaged).distinctBy { it.path }.take(MAX_INLINE_FILES)) {
-                        val diff =
-                            git.diffFile(s.path, staged = s.isStaged && !s.isUnstaged).firstOrNull()
-                                ?: git.diffFile(s.path, staged = false).firstOrNull()
-                                ?: continue
-                        val block = diff.rawUnified.ifBlank {
-                            diff.hunks.joinToString("\n") { h ->
-                                "@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@\n" +
-                                    h.lines.joinToString("\n") { l -> l.text }
-                            }
-                        }
-                        if (sb.length + block.length > AgentReviewPrompt.INLINE_DIFF_BUDGET) break
-                        if (sb.isNotEmpty()) sb.append("\n")
-                        sb.append("diff --git ").append(s.path).append("\n").append(block)
-                    }
-                    diffText = sb.toString().takeIf { it.isNotBlank() }
+                    // Reuse collectDiff: it uses compactDiff (not rawUnified, which with
+                    // the host's -U100000 is the entire file) and slices an oversized
+                    // block instead of breaking, so the first large file does not empty
+                    // the whole prompt.
+                    diffText =
+                        collectDiff(staged + unstaged, AgentReviewPrompt.INLINE_DIFF_BUDGET)
+                            .takeIf { it.isNotBlank() }
                 }
 
                 onAgentReview(
@@ -618,6 +637,10 @@ class CodebaseGitViewModel(
                         baseRef = _reviewBase.value,
                     ),
                 )
+            } catch (e: Exception) {
+                // A throwing provider (IPC drop, repo mid-rebase) must not vanish as
+                // a dead button: surface it like any other git failure.
+                _message.value = "Agent review failed: ${e.message ?: e::class.simpleName}"
             } finally {
                 _busy.value = false
             }
@@ -645,8 +668,15 @@ class CodebaseGitViewModel(
             _busy.value = true
             _message.value = null
             try {
-                report(block()) { if (refreshGraph) loadGraph(reset = true) }
-                git.refreshStatus()
+                try {
+                    report(block()) { if (refreshGraph) loadGraph(reset = true) }
+                    git.refreshStatus()
+                } catch (e: Exception) {
+                    // A throwing provider (IPC drop, repo mid-rebase) must not vanish:
+                    // report() already exists to surface failures, and a raw throw
+                    // here would leave _message null with only the spinner stopping.
+                    _message.value = "Failed: ${e.message ?: e::class.simpleName}"
+                }
             } finally {
                 _busy.value = false
             }
@@ -675,12 +705,6 @@ class CodebaseGitViewModel(
         /** Immediate children inspected for the no-repository hint. */
         private const val CHILD_SCAN_LIMIT = 200
 
-        /**
-         * The branch name out of a graph's ref decorations. `%D` yields
-         * entries like `HEAD -> feat/x`, `origin/feat/x`, `tag: v1`; only the
-         * HEAD arrow names the checked-out branch, and a detached HEAD has
-         * none - which reads as "detached", not as some remote's name.
-         */
         /**
          * A sentence for the empty state, from the selected folder alone:
          * names the folder, and counts the repositories directly inside it so
@@ -731,6 +755,12 @@ class CodebaseGitViewModel(
                 ?: branches.firstOrNull { it == "master" }
                 ?: current
 
+        /**
+         * The branch name out of a graph's ref decorations. `%D` yields
+         * entries like `HEAD -> feat/x`, `origin/feat/x`, `tag: v1`; only the
+         * HEAD arrow names the checked-out branch, and a detached HEAD has
+         * none - which reads as "detached", not as some remote's name.
+         */
         internal fun branchOf(nodes: List<GitCommitNodeData>): String {
             val refs = nodes.firstOrNull()?.refs ?: return ""
             refs.firstOrNull { it.startsWith("HEAD ->") }

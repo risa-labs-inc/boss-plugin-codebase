@@ -27,6 +27,10 @@
     {
       "name": "project.replace",
       "description": "Replace occurrences across an explicit file list in the project (project_replace)"
+    },
+    {
+      "name": "git.write",
+      "description": "Mutate git state from an agent: stage, unstage, discard, checkout, cherry-pick, revert"
     }
   ]
 }
