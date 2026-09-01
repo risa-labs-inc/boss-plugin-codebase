@@ -302,10 +302,14 @@ class CodebaseSearchViewModel(
      * click. [ProjectSearchProvider.replaceInProject] takes either, which is
      * why replace worked while opening did not.
      */
-    internal fun absolutePathOf(path: String): String {
+    internal fun absolutePathOf(path: String, separator: Char = PathUtils.platformSeparator): String {
         if (path.startsWith("/") || path.matches(WINDOWS_ABSOLUTE)) return path
-        val root = getProjectPath()?.trimEnd('/') ?: return path
-        return if (root.isEmpty()) path else "$root/$path"
+        // Trim BOTH separators and join with the platform's: a Windows root
+        // ("C:\\proj") trimmed only of '/' joined as "C:\\proj/src/x.kt".
+        // Java tolerates the mix, but the result is handed to the editor and
+        // compared against host-sourced paths, so it should look like one.
+        val root = getProjectPath()?.trimEnd('/', '\\') ?: return path
+        return if (root.isEmpty()) path else root + separator + path
     }
 
     /** Dry-run first, so the UI can show what will change before writing. */

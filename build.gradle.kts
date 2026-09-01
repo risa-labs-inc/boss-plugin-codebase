@@ -109,11 +109,15 @@ tasks.register<Jar>("buildPluginJar") {
         )
     }
 
-    // Include compiled classes
+    // Compiled classes AND processed resources - sourceSets.main.output already
+    // carries build/resources/main, so the raw src/main/resources must NOT be
+    // added as well. With DuplicatesStrategy.EXCLUDE the first copy wins, so
+    // adding both shipped the correct manifest only because the processed one
+    // happened to be declared first. That is a live landmine now that
+    // plugin.json holds the 0.0.0-dev placeholder and the plugin reads its
+    // version back out of the jar at runtime: a reorder would ship a plugin
+    // reporting 0.0.0-dev to the host.
     from(sourceSets.main.get().output)
-
-    // Include plugin manifest
-    from("src/main/resources")
 }
 
 // Sync version from build.gradle.kts into plugin.json (single source of truth)
@@ -151,6 +155,6 @@ tasks.register<Jar>("shadowJar") {
         )
     }
     from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
+    // Processed resources only - see buildPluginJar above.
     from(sourceSets.main.get().output)
-    from("src/main/resources")
 }

@@ -124,6 +124,7 @@ fun CodebaseGitContent(
 
     val fileStatus by viewModel.fileStatus.collectAsState()
     val graph by viewModel.graph.collectAsState()
+    val hasMoreGraph by viewModel.hasMoreGraph.collectAsState()
     val graphBusy by viewModel.graphBusy.collectAsState()
     val busy by viewModel.busy.collectAsState()
     val message by viewModel.message.collectAsState()
@@ -170,10 +171,16 @@ fun CodebaseGitContent(
     }
 
     // Nothing staged but tracked edits present: commit stages them first, the
-    // way VS Code's Commit does, and the label says so.
+    // way VS Code's Commit does, and the label says so. It stages exactly
+    // `changed` - the tracked edits the label counts - and never the UNTRACKED
+    // group, which the user has not touched.
     val commitStagesAll = staged.isEmpty() && changed.isNotEmpty()
     val canCommit = (staged.isNotEmpty() || commitStagesAll) && commitMessage.isNotBlank() && !busy
-    val doCommit = { if (canCommit) viewModel.commit(stageFirst = commitStagesAll) }
+    val doCommit = {
+        if (canCommit) {
+            viewModel.commit(stageFirst = if (commitStagesAll) changed.map { it.path } else emptyList())
+        }
+    }
 
     // Box, not a bare Column - see the note in CodebaseSearchContent. Emitted
     // after the Column, GitConfirmDialog was measured at zero height, so
@@ -483,7 +490,7 @@ fun CodebaseGitContent(
                             graph = graph,
                             graphBusy = graphBusy,
                             remoteNames = remoteNames,
-                            hasMore = viewModel.hasMoreGraph(),
+                            hasMore = hasMoreGraph,
                             modifier = Modifier.weight((1f - splitFraction).coerceAtLeast(0.05f)),
                             onOpen = { viewModel.openCommitDiff(it.hash) },
                             onAction = { confirm = it },
@@ -1084,15 +1091,15 @@ private fun GitCommitRow(
         GraphRowCanvas(row = graphRow, laneCount = laneCount)
         Spacer(Modifier.width(4.dp))
         // The row shows the relative age; the tooltip carries the absolute date
-    // formatCommitDate was written for.
-    val absoluteDate = formatCommitDate(node.date)
-    val tooltip =
-        if (absoluteDate.isNotEmpty()) "${node.shortHash}  ${node.subject}\n${node.author}  •  $absoluteDate"
-        else "${node.shortHash}  ${node.subject}\n${node.author}"
-    CodebaseTooltip(
-        tooltip,
-        modifier = Modifier.weight(1f),
-    ) {
+        // formatCommitDate was written for.
+        val absoluteDate = formatCommitDate(node.date)
+        val tooltip =
+            if (absoluteDate.isNotEmpty()) "${node.shortHash}  ${node.subject}\n${node.author}  •  $absoluteDate"
+            else "${node.shortHash}  ${node.subject}\n${node.author}"
+        CodebaseTooltip(
+            tooltip,
+            modifier = Modifier.weight(1f),
+        ) {
             // Pills between the subject and the author, both of which give up
             // width to them: a branch head is the one thing on this row you
             // scan a graph FOR, and a long subject must not push it off the
@@ -1575,7 +1582,7 @@ internal fun formatCommitDate(epochSeconds: Long): String {
     if (epochSeconds <= 0) return ""
     return try {
         SimpleDateFormat("MMM d, yyyy", Locale.US).format(Date(epochSeconds * 1000L))
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         ""
     }
 }

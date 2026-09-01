@@ -22,6 +22,14 @@ object AgentReviewPrompt {
         staged: List<GitFileStatusData>,
         unstaged: List<GitFileStatusData>,
         diffText: String?,
+        /**
+         * Whether the collector left anything out - a sliced file, a file
+         * dropped for want of budget or past its file cap, or one whose diff
+         * would not fetch. Passed as a fact rather than sniffed back out of
+         * [diffText]: the marker only ever appeared on a file the collector
+         * sliced, so a run that simply stopped early looked complete.
+         */
+        diffTruncated: Boolean = false,
         /** Free text from the review panel; empty when the user gave none. */
         instructions: String = "",
         /** Quick keeps it to a short pass; Deep asks for a thorough one. */
@@ -94,8 +102,13 @@ object AgentReviewPrompt {
             // lands a few characters OVER the budget. Re-testing would replace
             // that text with a tool pointer and drop the diff exactly in the
             // case the truncation exists to serve: one oversized file.
-            if (diffText.contains(TRUNCATION_MARKER)) {
-                sb.appendLine("(diff truncated to the inline budget; use the git_diff / git_diff_ref tools for the rest)")
+            if (diffTruncated) {
+                sb.appendLine(
+                    "This diff is INCOMPLETE - it was cut to fit an inline budget. " +
+                        "Files below with no diff here, and any block ending in " +
+                        "\"$TRUNCATION_MARKER\", must be read with git_diff before you " +
+                        "draw conclusions about them.",
+                )
             }
             sb.appendLine("Full diff:")
             sb.appendLine("```diff")

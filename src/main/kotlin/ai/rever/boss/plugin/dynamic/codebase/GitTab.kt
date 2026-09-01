@@ -1,9 +1,11 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
 import ai.rever.boss.plugin.api.AiGatewayAPI
+import ai.rever.boss.plugin.api.DiffLineKind
 import ai.rever.boss.plugin.api.GitBranchRefData
 import ai.rever.boss.plugin.api.GitCommitNodeData
 import ai.rever.boss.plugin.api.GitDataProvider
+import ai.rever.boss.plugin.api.GitDiffData
 import ai.rever.boss.plugin.api.GitFileStatusData
 import ai.rever.boss.plugin.api.GitFileStatusTypeData
 import ai.rever.boss.plugin.api.GitOperationResultData
@@ -14,10 +16,15 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The GIT tab of the codebase panel (P7): the changes accordion plus the
@@ -67,6 +74,27 @@ class CodebaseGitViewModel(
 
     /** Latched once a load returns fewer commits than it requested. See [hasMoreGraph]. */
     private val _graphExhausted = MutableStateFlow(false)
+
+    /**
+     * Whether "Load more" has anything left to load.
+     *
+     * A FLOW, not a function. As a function it read [_graphExhausted] and the
+     * graph size as plain values, and only re-evaluated because a changing
+     * graph happened to drive recomposition - so the one case it needed to
+     * cover was the one it missed: a "Load more" that returns the same list is
+     * conflated away by StateFlow equality, the latch flips, and nothing
+     * recomposes, leaving the action on screen.
+     *
+     * Not `size < GRAPH_MAX` either: a 12-commit repository is under the
+     * ceiling forever, so the action showed on every repository smaller than
+     * 200 commits and each click refetched the same rows. The latch is set
+     * when a load comes back with fewer commits than it asked for, which is
+     * the only signal the provider gives that history ran out.
+     */
+    val hasMoreGraph: StateFlow<Boolean> =
+        combine(_graph, _graphExhausted) { graph, exhausted ->
+            !exhausted && graph.size < GRAPH_MAX
+        }.stateIn(scope, SharingStarted.Eagerly, false)
 
     /**
      * The ref the graph is showing, or null for the checked-out branch.
@@ -238,13 +266,12 @@ class CodebaseGitViewModel(
     fun refreshStatus() {
         scope.launch {
             try {
-                git?.refreshStatus()
+                val isRepo = awaitRepositoryFlag()
                 // Only when there is no repository. describeMissingRepo lists the
                 // project root and stats up to CHILD_SCAN_LIMIT children looking
                 // for nested .git dirs - blocking work for a hint the normal case
                 // never renders.
-                _noRepoHint.value =
-                    if (isGitRepository.value) "" else describeMissingRepo(getProjectPath())
+                _noRepoHint.value = if (isRepo) "" else describeMissingRepo(getProjectPath())
             } catch (e: Exception) {
                 // The one provider call here used to have no catch, so an IPC
                 // drop escaped the launch to the thread's uncaught handler and
@@ -254,6 +281,30 @@ class CodebaseGitViewModel(
                 _loaded.value = true
             }
         }
+    }
+
+    /**
+     * Refresh, then read [GitDataProvider.isGitRepository] once it has actually
+     * moved - the same wait the MCP tools' `awaitFresh` does, for the same
+     * reason: the provider refreshes asynchronously, and over IPC when this
+     * plugin runs out-of-process, so the value sampled immediately after
+     * `refreshStatus()` is the one from BEFORE it.
+     *
+     * Getting this wrong is visible twice over: the panel flashes "X is not a
+     * Git repository" on a perfectly good repo (because [_loaded] flips in the
+     * same breath), and it pays for a directory listing plus up to
+     * [CHILD_SCAN_LIMIT] stats that a repository never needs.
+     *
+     * A no-op refresh emits nothing and the wait simply times out onto the
+     * current value, which is already correct in that case.
+     */
+    private suspend fun awaitRepositoryFlag(): Boolean {
+        val provider = git ?: return false
+        val before = provider.isGitRepository.value
+        provider.refreshStatus()
+        return withTimeoutOrNull(REPO_FLAG_SETTLE_MS) {
+            provider.isGitRepository.first { it != before }
+        } ?: provider.isGitRepository.value
     }
 
     /**
@@ -275,7 +326,7 @@ class CodebaseGitViewModel(
                     // any explicit operation surfaces the error via op().
                     try {
                         git.refreshStatus()
-                    } catch (e: Exception) {
+                    } catch (_: Exception) {
                         // Deliberately silent here: surfacing on every 5 s tick
                         // would overwrite real operation results.
                     }
@@ -305,6 +356,12 @@ class CodebaseGitViewModel(
         _graph.value = emptyList()
         _graphRef.value = null
         _reviewBase.value = ""
+        // A commit message and review instructions are written ABOUT a
+        // project; carrying them into the next one puts someone else's draft
+        // in your commit box.
+        _commitMessage.value = ""
+        _reviewInstructions.value = ""
+        _graphExhausted.value = false
         refreshStatus()
         loadGraph(reset = true)
     }
@@ -370,7 +427,7 @@ class CodebaseGitViewModel(
      * [GitDataProvider.branches].
      */
     private suspend fun refreshBranchOptions() {
-        val refs = try { git?.branches().orEmpty() } catch (e: Exception) { emptyList() }
+        val refs = try { git?.branches().orEmpty() } catch (_: Exception) { emptyList() }
         _branchRefs.value = refs
         _remoteNames.value = GitBranchModel.remoteNamesOf(refs)
         refs.firstOrNull { it.isCurrent }?.let { _currentBranch.value = it.name }
@@ -441,17 +498,6 @@ class CodebaseGitViewModel(
      */
     fun push() = op(refreshGraph = true) { git?.push() }
 
-    /**
-     * Whether "Load more" has anything left to load.
-     *
-     * Not `size < GRAPH_MAX`: a 12-commit repository is under the ceiling
-     * forever, so the action showed on every repository smaller than 200
-     * commits and each click refetched the same rows. The latch below is set
-     * when a load comes back with fewer commits than it asked for, which is
-     * the only signal the provider gives that history ran out.
-     */
-    fun hasMoreGraph(): Boolean = !_graphExhausted.value && _graph.value.size < GRAPH_MAX
-
     // ---- row / commit operations ----
 
     fun stage(path: String) = op { git?.stage(path) }
@@ -502,11 +548,19 @@ class CodebaseGitViewModel(
     fun checkout(ref: String) = op(refreshGraph = true) { git?.checkout(ref) }
 
     /**
-     * Commit. With nothing staged but tracked changes present this stages
-     * them first, matching VS Code's "Commit" on an empty index; the button
-     * label says so, so the extra `git add` is never a surprise.
+     * Commit. With nothing staged but tracked changes present, [stageFirst]
+     * carries exactly the paths to stage - matching VS Code's "Commit" on an
+     * empty index; the button label says so, so the extra `git add` is never
+     * a surprise.
+     *
+     * A path LIST, not a `stageAll` flag. The provider's stageAll is
+     * `git add -A`, which also stages untracked files: under a button labelled
+     * "Commit All", sitting above a separate UNTRACKED group the user has not
+     * touched, that quietly commits files they never staged. The CHANGES
+     * header button already refuses stageAll for the same reason, and here the
+     * stakes are higher because this one lands a commit.
      */
-    fun commit(stageFirst: Boolean = false) {
+    fun commit(stageFirst: List<String> = emptyList()) {
         val message = _commitMessage.value.trim()
         if (message.isEmpty()) {
             _message.value = "Enter a commit message first."
@@ -520,10 +574,12 @@ class CodebaseGitViewModel(
         _message.value = null
         scope.launch {
             try {
-                if (stageFirst) {
-                    val staged = git.stageAll()
+                for (path in stageFirst) {
+                    val staged = git.stage(path)
                     if (staged is GitOperationResultData.Error) {
-                        _message.value = "Failed: ${staged.message}"
+                        // Stop before committing: a partial index plus a commit
+                        // is worse than no commit at all.
+                        _message.value = "Failed to stage $path: ${staged.message}"
                         return@launch
                     }
                 }
@@ -532,6 +588,12 @@ class CodebaseGitViewModel(
                     loadGraph(reset = true)
                 }
                 git.refreshStatus()
+            } catch (e: Exception) {
+                // The one operation here that used to have no catch - and the
+                // most consequential to lose, because after staging, a failure
+                // between the stage and the commit leaves the index changed
+                // with nothing on screen saying so.
+                _message.value = "Failed: ${e.message ?: e::class.simpleName}"
             } finally {
                 _busy.value = false
             }
@@ -595,7 +657,7 @@ class CodebaseGitViewModel(
                     _message.value = "Nothing to describe - there are no changes."
                     return@launch
                 }
-                val diff = collectDiff(subject, COMMIT_DIFF_BUDGET)
+                val diff = collectDiff(subject, COMMIT_DIFF_BUDGET).text
                 val reply =
                     gateway.complete(CommitMessagePrompt.request(subject, diff)).getOrNull()
                 val text = CommitMessagePrompt.clean(reply?.text.orEmpty())
@@ -621,14 +683,14 @@ class CodebaseGitViewModel(
      * alignment). Pure, so [GitTabCompactDiffTest] can pin it.
      */
     internal fun compactDiff(
-        diff: ai.rever.boss.plugin.api.GitDiffData,
+        diff: GitDiffData,
         context: Int = 3,
     ): String {
         val lines = diff.hunks.flatMap { it.lines }
-        if (lines.none { it.kind != ai.rever.boss.plugin.api.DiffLineKind.CONTEXT }) return ""
+        if (lines.none { it.kind != DiffLineKind.CONTEXT }) return ""
         val keep = BooleanArray(lines.size)
         lines.forEachIndexed { i, l ->
-            if (l.kind != ai.rever.boss.plugin.api.DiffLineKind.CONTEXT) {
+            if (l.kind != DiffLineKind.CONTEXT) {
                 for (j in (i - context).coerceAtLeast(0)..(i + context).coerceAtMost(lines.size - 1)) keep[j] = true
             }
         }
@@ -644,8 +706,8 @@ class CodebaseGitViewModel(
             gap = false
             val prefix =
                 when (l.kind) {
-                    ai.rever.boss.plugin.api.DiffLineKind.ADDED -> "+"
-                    ai.rever.boss.plugin.api.DiffLineKind.REMOVED -> "-"
+                    DiffLineKind.ADDED -> "+"
+                    DiffLineKind.REMOVED -> "-"
                     else -> " "
                 }
             sb.append(prefix).append(l.text).append('\n')
@@ -654,15 +716,30 @@ class CodebaseGitViewModel(
         return sb.toString()
     }
 
+    /** The collected diff text, and whether anything was left out of it. */
+    internal data class CollectedDiff(val text: String, val truncated: Boolean)
+
     /**
      * Per-file compact diffs for [files], concatenated with a `--- path` header
-     * each, truncated to [budget] characters total. Used to build the prompt
+     * each, bounded to [budget] characters total. Used to build the prompt
      * payload for Agent Review and commit-message generation.
+     *
+     * [CollectedDiff.truncated] reports whether ANY file was cut short, dropped
+     * for want of budget, dropped past [MAX_INLINE_FILES], or failed to fetch.
+     * The caller passes that to the prompt builder as a fact, rather than the
+     * builder sniffing the marker out of the text - and it used to be missed
+     * entirely for the common shape: with a dozen medium files the loop broke
+     * at file 7, appended no marker, and the prompt said "Full diff:" over
+     * seven of them with nothing saying the rest existed.
      */
-    private suspend fun collectDiff(files: List<GitFileStatusData>, budget: Int): String {
-        val provider = git ?: return ""
+    private suspend fun collectDiff(files: List<GitFileStatusData>, budget: Int): CollectedDiff {
+        val provider = git ?: return CollectedDiff("", false)
+        val distinct = files.distinctBy { it.path }
+        // Files past the cap never get a per-file marker of their own, so the
+        // overflow itself is the signal.
+        var truncated = distinct.size > MAX_INLINE_FILES
         val sb = StringBuilder()
-        for (f in files.distinctBy { it.path }.take(MAX_INLINE_FILES)) {
+        for (f in distinct.take(MAX_INLINE_FILES)) {
             // A throwing provider (IPC drop, repo mid-rebase) on ONE file must not
             // kill the whole collection: skip that file, keep the rest. The file
             // stays in the listing above, and the agent can fetch it via git_diff.
@@ -671,7 +748,10 @@ class CodebaseGitViewModel(
                     .getOrNull()?.firstOrNull()
                     ?: runCatching { provider.diffFile(f.path, staged = false) }
                         .getOrNull()?.firstOrNull()
-                    ?: continue
+            if (diff == null) {
+                truncated = true
+                continue
+            }
             // compactDiff, not rawUnified: the host generates diffs with whole-file
             // context (-U100000) for the viewer, so rawUnified is the entire file. Fed
             // to a char-budgeted prompt that broke on the first oversized block, a
@@ -679,23 +759,27 @@ class CodebaseGitViewModel(
             // form is just the changed lines plus a little context, so the budget now
             // bounds real content instead of context padding.
             val block = compactDiff(diff).ifBlank { continue }
-            if (sb.isNotEmpty() && sb.length + block.length > budget) break
             // Reserve the per-file header and the truncation marker, so the
-            // framing never pushes the result past [budget]: the prompt
-            // builder used to treat an over-budget result as "too large" and
-            // drop it, which voided the truncation exactly when one happened.
+            // framing never pushes the result past [budget].
             val frame = "--- ${f.path}\n".length + AgentReviewPrompt.TRUNCATION_MARKER.length + 2
-            if (sb.length + frame >= budget) break
             val remaining = budget - sb.length - frame
+            // Every file gets sliced to fit, not just the first: breaking on the
+            // first block that does not fit whole dropped the rest silently. Stop
+            // once what is left would be too small to read.
+            if (remaining < MIN_DIFF_SLICE) {
+                truncated = true
+                break
+            }
             val slice =
                 if (block.length > remaining) {
+                    truncated = true
                     block.take(remaining) + "\n" + AgentReviewPrompt.TRUNCATION_MARKER + "\n"
                 } else {
                     block
                 }
             sb.append("--- ").append(f.path).append('\n').append(slice).append('\n')
         }
-        return sb.toString()
+        return CollectedDiff(sb.toString(), truncated)
     }
 
     /**
@@ -710,23 +794,21 @@ class CodebaseGitViewModel(
                 val staged = status.filter { it.isStaged }
                 val unstaged = status.filter { it.isUnstaged }
 
-                var diffText: String? = null
-                if (git != null) {
-                    // Reuse collectDiff: it uses compactDiff (not rawUnified, which with
-                    // the host's -U100000 is the entire file) and slices an oversized
-                    // block instead of breaking, so the first large file does not empty
-                    // the whole prompt.
-                    diffText =
-                        collectDiff(staged + unstaged, AgentReviewPrompt.INLINE_DIFF_BUDGET)
-                            .takeIf { it.isNotBlank() }
-                }
+                // Reuse collectDiff: it uses compactDiff (not rawUnified, which with
+                // the host's -U100000 is the entire file) and slices an oversized
+                // block instead of breaking, so a large file does not empty the
+                // whole prompt.
+                val collected =
+                    if (git != null) collectDiff(staged + unstaged, AgentReviewPrompt.INLINE_DIFF_BUDGET)
+                    else CollectedDiff("", false)
 
                 onAgentReview(
                     AgentReviewPrompt.build(
                         projectPath = getProjectPath().orEmpty(),
                         staged = staged,
                         unstaged = unstaged,
-                        diffText = diffText,
+                        diffText = collected.text.takeIf { it.isNotBlank() },
+                        diffTruncated = collected.truncated,
                         instructions = _reviewInstructions.value,
                         deep = _reviewDeep.value,
                         baseRef = _reviewBase.value,
@@ -801,8 +883,18 @@ class CodebaseGitViewModel(
         /** Diff characters sent when drafting a commit message. */
         private const val COMMIT_DIFF_BUDGET = 12_000
 
+        /**
+         * Smallest slice of a file's diff worth attaching. Below this the
+         * remaining budget buys a few unreadable characters, so the collection
+         * stops and reports itself truncated instead.
+         */
+        private const val MIN_DIFF_SLICE = 200
+
         /** Immediate children inspected for the no-repository hint. */
         private const val CHILD_SCAN_LIMIT = 200
+
+        /** How long [awaitRepositoryFlag] waits for the provider's flag to move. */
+        private const val REPO_FLAG_SETTLE_MS = 2_000L
 
         /**
          * A sentence for the empty state, from the selected folder alone:
@@ -823,7 +915,7 @@ class CodebaseGitViewModel(
                         ?.take(CHILD_SCAN_LIMIT)
                         ?.count { java.io.File(it, ".git").exists() }
                         ?: 0
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     0
                 }
             return when {

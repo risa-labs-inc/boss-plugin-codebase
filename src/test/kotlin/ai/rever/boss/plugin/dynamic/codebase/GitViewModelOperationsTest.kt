@@ -56,6 +56,8 @@ class GitViewModelOperationsTest {
         val status = MutableStateFlow(emptyList<GitFileStatusData>())
         val graphLimits = mutableListOf<Int>()
         val staged = mutableListOf<String>()
+        val commits = mutableListOf<String>()
+        var stageAllCalls = 0
 
         override val fileStatus: StateFlow<List<GitFileStatusData>> = status
         override val commitLog: StateFlow<List<GitCommitInfoData>> = MutableStateFlow(emptyList())
@@ -82,7 +84,15 @@ class GitViewModelOperationsTest {
 
         override suspend fun unstage(filePath: String) = GitOperationResultData.Success()
 
-        override suspend fun stageAll() = GitOperationResultData.Success()
+        override suspend fun stageAll(): GitOperationResultData {
+            stageAllCalls++
+            return GitOperationResultData.Success()
+        }
+
+        override suspend fun commit(message: String): GitOperationResultData {
+            commits += message
+            return GitOperationResultData.Success()
+        }
 
         override suspend fun unstageAll() = GitOperationResultData.Success()
 
@@ -126,6 +136,28 @@ class GitViewModelOperationsTest {
             isStaged = false,
             isUnstaged = true,
         )
+
+    /** A diff small enough that twenty of them never approach the budget. */
+    private fun tinyDiff(path: String): GitDiffData {
+        val lines = listOf(DiffLine("$path one line", DiffLineKind.ADDED))
+        return GitDiffData(
+            path = path,
+            additions = 1,
+            deletions = 0,
+            hunks = listOf(DiffHunk(1, 1, 1, 1, "", lines)),
+        )
+    }
+
+    /** A diff big enough that a dozen of them overflow the budget together. */
+    private fun mediumDiff(path: String): GitDiffData {
+        val lines = (1..120).map { DiffLine("$path added line number $it", DiffLineKind.ADDED) }
+        return GitDiffData(
+            path = path,
+            additions = lines.size,
+            deletions = 0,
+            hunks = listOf(DiffHunk(1, lines.size, 1, lines.size, "", lines)),
+        )
+    }
 
     /** A compact diff comfortably larger than the inline budget. */
     private fun oversizedDiff(path: String): GitDiffData {
@@ -177,8 +209,11 @@ class GitViewModelOperationsTest {
         val vm = viewModel(host)
 
         awaitUntil("the initial graph") { vm.graph.value.size == 12 }
+        // hasMoreGraph is a derived flow: it settles on the view model's own
+        // scope, a beat after the graph it is derived from.
+        awaitUntil("hasMoreGraph to settle") { !vm.hasMoreGraph.value }
 
-        assertFalse(vm.hasMoreGraph(), "a 12-commit repository has no second page")
+        assertFalse(vm.hasMoreGraph.value, "a 12-commit repository has no second page")
     }
 
     @Test
@@ -187,11 +222,122 @@ class GitViewModelOperationsTest {
         val vm = viewModel(host)
 
         awaitUntil("the initial graph") { vm.graph.value.size == CodebaseGitViewModel.GRAPH_PAGE }
+        awaitUntil("hasMoreGraph to settle") { vm.hasMoreGraph.value }
 
-        assertTrue(vm.hasMoreGraph(), "a full first page means history continues")
+        assertTrue(vm.hasMoreGraph.value, "a full first page means history continues")
     }
 
     // ---- batch ----
+
+    // ---- commit ----
+
+    @Test
+    fun `Commit All stages the tracked edits it names, never the untracked group`() {
+        // The provider's stageAll is `git add -A`, which also stages untracked
+        // files. Under a button labelled "Commit All", sitting above a separate
+        // UNTRACKED group the user has not touched, that quietly commits files
+        // they never staged - and unlike the CHANGES header button, this one
+        // lands a commit. VS Code's `git commit -a` does not do it either.
+        val host = Host()
+        val vm = viewModel(host)
+        awaitUntil("the first load") { vm.loaded.value }
+
+        vm.setCommitMessage("a message")
+        vm.commit(stageFirst = listOf("tracked.kt"))
+
+        awaitUntil("the commit") { host.commits.isNotEmpty() }
+        assertEquals(listOf("tracked.kt"), host.staged)
+        assertEquals(0, host.stageAllCalls, "stageAll would sweep in the untracked group")
+    }
+
+    @Test
+    fun `a failure while staging stops short of the commit`() {
+        // A partial index plus a commit is worse than no commit at all.
+        val host = Host(stageFailures = mapOf("b.kt" to "b is locked"))
+        val vm = viewModel(host)
+        awaitUntil("the first load") { vm.loaded.value }
+
+        vm.setCommitMessage("a message")
+        vm.commit(stageFirst = listOf("a.kt", "b.kt"))
+
+        awaitUntil("the failure") { vm.message.value != null && !vm.busy.value }
+        assertTrue(host.commits.isEmpty(), "nothing may be committed after a staging failure")
+        assertTrue("b is locked" in vm.message.value!!, "reported: ${vm.message.value}")
+    }
+
+    @Test
+    fun `a throwing provider during commit surfaces instead of vanishing`() {
+        // commit() was the one operation with no catch: the exception escaped
+        // the SupervisorJob scope to the thread's default handler and the user
+        // saw the spinner stop and nothing else.
+        val host =
+            object : Host() {
+                override suspend fun commit(message: String): GitOperationResultData =
+                    throw IllegalStateException("index.lock exists")
+            }
+        val vm = viewModel(host)
+        awaitUntil("the first load") { vm.loaded.value }
+
+        vm.setCommitMessage("a message")
+        vm.commit()
+
+        awaitUntil("the reported failure") { vm.message.value != null && !vm.busy.value }
+        assertTrue("index.lock exists" in vm.message.value!!, "reported: ${vm.message.value}")
+    }
+
+    // ---- multi-file diff collection ----
+
+    @Test
+    fun `a diff cut short across several files still says it is incomplete`() {
+        // The marker is only ever appended to a file the collector SLICED. With
+        // a dozen medium files the loop stopped early instead, appended no
+        // marker, and the prompt said "Full diff:" over the ones that fit with
+        // nothing saying the rest existed.
+        val files = (1..12).map { "f$it.kt" }
+        val host =
+            Host(fileDiffs = files.associateWith { listOf(mediumDiff(it)) })
+        var prompt: String? = null
+        val vm = viewModel(host) { prompt = it }
+        host.status.value = files.map { unstagedFile(it) }
+
+        awaitUntil("the file status") { vm.fileStatus.value.size == 12 }
+        vm.startAgentReview()
+        awaitUntil("the review prompt") { prompt != null }
+
+        val text = prompt!!
+        assertTrue("Full diff:" in text, "some diff must still be attached")
+        assertTrue("INCOMPLETE" in text, "the dropped files must be announced:\n${text.take(700)}")
+        assertTrue(
+            files.any { "--- $it" !in text },
+            "this case only means anything if the budget actually dropped a file",
+        )
+    }
+
+    @Test
+    fun `files dropped past the inline file cap are announced too`() {
+        // The distinct case: twenty TINY diffs. Nothing is ever sliced and the
+        // char budget is never reached, so the only thing left out is whatever
+        // fell past MAX_INLINE_FILES - and that drop has no per-file marker of
+        // its own. Without the file-count check the prompt reads as complete.
+        val files = (1..20).map { "t$it.kt" }
+        val host = Host(fileDiffs = files.associateWith { listOf(tinyDiff(it)) })
+        var prompt: String? = null
+        val vm = viewModel(host) { prompt = it }
+        host.status.value = files.map { unstagedFile(it) }
+
+        awaitUntil("the file status") { vm.fileStatus.value.size == 20 }
+        vm.startAgentReview()
+        awaitUntil("the review prompt") { prompt != null }
+
+        val text = prompt!!
+        val attached = files.count { "--- $it\n" in text }
+        assertTrue("Full diff:" in text, "the diffs that fit must still be attached")
+        // Nothing was sliced and the char budget was never close, so the ONLY
+        // thing left out is the file-cap overflow. (The marker cannot be used
+        // as the signal here: the warning text quotes it.)
+        assertTrue(attached in 1 until files.size, "expected a partial set, got $attached of ${files.size}")
+        assertTrue("INCOMPLETE" in text, "files past the cap must be announced:\n${text.take(700)}")
+    }
 
     @Test
     fun `a batch reports the FIRST failure, not the last result`() {

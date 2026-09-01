@@ -1,6 +1,10 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
 import ai.rever.boss.plugin.api.GitDataProvider
+import ai.rever.boss.plugin.api.GitDiffData
+import ai.rever.boss.plugin.api.GitFileStatusData
+import ai.rever.boss.plugin.api.GitFileStatusTypeData
+import ai.rever.boss.plugin.api.GitOperationResultData
 import ai.rever.boss.plugin.api.McpToolArgs
 import ai.rever.boss.plugin.api.McpToolDefinition
 import ai.rever.boss.plugin.api.McpToolHandler
@@ -236,7 +240,7 @@ internal class CodebaseGitMcpToolProvider(
                 "For regex queries the replacement supports $1..$9 capture references.",
             inputSchema = REPLACE_SCHEMA,
             readOnly = false,
-            requiredPermissions = listOf("project.replace"),
+            requiredPermissions = listOf(PROJECT_REPLACE),
             handler = McpToolHandler { args -> replace(args) },
         ),
     )
@@ -367,7 +371,7 @@ internal class CodebaseGitMcpToolProvider(
                 }
                 c == '"' -> inString = !inString
                 c == ',' && !inString -> {
-                    items += current.toString().trim()
+                    items += current.toString()
                     current.clear()
                 }
                 !inString && c.isWhitespace() -> Unit
@@ -377,7 +381,11 @@ internal class CodebaseGitMcpToolProvider(
             i++
         }
         if (inString) return null
-        items += current.toString().trim()
+        items += current.toString()
+        // No trim: whitespace BETWEEN elements is skipped by the scanner
+        // above (`!inString && c.isWhitespace()`), so anything left here was
+        // inside the quotes and is part of the path. The array form exists to
+        // carry awkward paths faithfully; trimming here undid that.
         return if (items.all { it.isNotEmpty() }) items else null
     }
 
@@ -421,30 +429,30 @@ internal class CodebaseGitMcpToolProvider(
      * the index side produced a three-column ` ??` that no agent slicing
      * fixed columns can parse.
      */
-    internal fun statusCell(s: ai.rever.boss.plugin.api.GitFileStatusData): String {
+    internal fun statusCell(s: GitFileStatusData): String {
         val untrackedOrIgnored =
             listOf(s.indexStatus, s.workTreeStatus).firstOrNull {
-                it == ai.rever.boss.plugin.api.GitFileStatusTypeData.UNTRACKED ||
-                    it == ai.rever.boss.plugin.api.GitFileStatusTypeData.IGNORED
+                it == GitFileStatusTypeData.UNTRACKED ||
+                    it == GitFileStatusTypeData.IGNORED
             }
         return when (untrackedOrIgnored) {
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.UNTRACKED -> "??"
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.IGNORED -> "!!"
+            GitFileStatusTypeData.UNTRACKED -> "??"
+            GitFileStatusTypeData.IGNORED -> "!!"
             else -> "${statusChar(s.indexStatus)}${statusChar(s.workTreeStatus)}"
         }
     }
 
-    private fun statusChar(type: ai.rever.boss.plugin.api.GitFileStatusTypeData?): String =
+    private fun statusChar(type: GitFileStatusTypeData?): String =
         when (type) {
             null -> " "
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.MODIFIED -> "M"
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.ADDED -> "A"
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.DELETED -> "D"
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.RENAMED -> "R"
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.COPIED -> "C"
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.UNTRACKED -> "?"
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.IGNORED -> "!"
-            ai.rever.boss.plugin.api.GitFileStatusTypeData.UNMERGED -> "U"
+            GitFileStatusTypeData.MODIFIED -> "M"
+            GitFileStatusTypeData.ADDED -> "A"
+            GitFileStatusTypeData.DELETED -> "D"
+            GitFileStatusTypeData.RENAMED -> "R"
+            GitFileStatusTypeData.COPIED -> "C"
+            GitFileStatusTypeData.UNTRACKED -> "?"
+            GitFileStatusTypeData.IGNORED -> "!"
+            GitFileStatusTypeData.UNMERGED -> "U"
         }
 
     private fun unavailableGit(): McpToolResult =
@@ -455,13 +463,13 @@ internal class CodebaseGitMcpToolProvider(
 
     private fun op(
         label: String,
-        result: ai.rever.boss.plugin.api.GitOperationResultData?,
+        result: GitOperationResultData?,
     ): McpToolResult {
         return when (result) {
             null -> unavailableGit()
-            is ai.rever.boss.plugin.api.GitOperationResultData.Success ->
+            is GitOperationResultData.Success ->
                 McpToolResult("$label${result.message?.let { ": $it" } ?: ""}")
-            is ai.rever.boss.plugin.api.GitOperationResultData.Error ->
+            is GitOperationResultData.Error ->
                 McpToolResult("$label failed: ${result.message}", isError = true)
         }
     }
@@ -473,19 +481,19 @@ internal class CodebaseGitMcpToolProvider(
      * file of a commit presented as the whole commit - with nothing to tell the
      * caller the rest existed. An agent reading it drew conclusions from one file.
      */
-    private fun diffTexts(diffs: List<ai.rever.boss.plugin.api.GitDiffData>): McpToolResult {
+    private fun diffTexts(diffs: List<GitDiffData>): McpToolResult {
         if (diffs.isEmpty()) return McpToolResult("No diff.")
         if (diffs.size == 1) return diffText(diffs.first())
         val body = diffs.joinToString("\n\n") { renderOne(it) }
         return McpToolResult(capDiff("${diffs.size} files changed\n\n$body"))
     }
 
-    private fun diffText(diff: ai.rever.boss.plugin.api.GitDiffData?): McpToolResult {
+    private fun diffText(diff: GitDiffData?): McpToolResult {
         if (diff == null) return McpToolResult("No diff.")
         return McpToolResult(capDiff(renderOne(diff)))
     }
 
-    private fun renderOne(diff: ai.rever.boss.plugin.api.GitDiffData): String {
+    private fun renderOne(diff: GitDiffData): String {
         val header =
             "diff --git ${diff.path} ${diff.oldPath?.let { "$it " } ?: ""}" +
                 "(+${diff.additions}/-${diff.deletions})"
@@ -541,6 +549,9 @@ internal class CodebaseGitMcpToolProvider(
 
         /** Permission required by every git tool that mutates repository state. */
         const val GIT_WRITE = "git.write"
+
+        /** Permission required to write file CONTENTS, as opposed to git state. */
+        const val PROJECT_REPLACE = "project.replace"
 
         /**
          * How long [awaitFresh] waits, after calling a `refresh*()` method, for
