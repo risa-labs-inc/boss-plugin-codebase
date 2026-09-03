@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "ai.rever.boss.plugin.dynamic"
-version = "1.5.8"
+version = "1.6.0"
 
 java {
     toolchain {
@@ -109,18 +109,34 @@ tasks.register<Jar>("buildPluginJar") {
         )
     }
 
-    // Include compiled classes
+    // Compiled classes AND processed resources - sourceSets.main.output already
+    // carries build/resources/main, so the raw src/main/resources must NOT be
+    // added as well. With DuplicatesStrategy.EXCLUDE the first copy wins, so
+    // adding both shipped the correct manifest only because the processed one
+    // happened to be declared first. That is a live landmine now that
+    // plugin.json holds the 0.0.0-dev placeholder and the plugin reads its
+    // version back out of the jar at runtime: a reorder would ship a plugin
+    // reporting 0.0.0-dev to the host.
     from(sourceSets.main.get().output)
-
-    // Include plugin manifest
-    from("src/main/resources")
 }
 
 // Sync version from build.gradle.kts into plugin.json (single source of truth)
 tasks.processResources {
+    // The filter rewrites the manifest version at execution time; declaring the
+    // version as an input makes a version bump re-run the task. Without this the
+    // processed manifest stays UP-TO-DATE and the new jar carries the old version.
+    val pluginVersion = version.toString()
+    inputs.property("pluginVersion", pluginVersion)
     filesMatching("**/plugin.json") {
         filter { line ->
-            line.replace(Regex(""""version"\s*:\s*"[^"]*""""), """"version": "\$version"""")
+            // The LAMBDA overload of replace, so the replacement is used
+            // verbatim. The String overload hands it to java.util.regex.Matcher,
+            // where a backslash escapes and a dollar is a group reference: the
+            // previous form emitted a literal backslash and only produced the
+            // right output because Matcher then swallowed it. It worked for
+            // every semver by accident, and the manifest version is now
+            // load-bearing (CodebaseDynamicPlugin reads it back at runtime).
+            Regex(""""version"\s*:\s*"[^"]*"""").replace(line) { """"version": "$pluginVersion"""" }
         }
     }
 }
@@ -139,6 +155,6 @@ tasks.register<Jar>("shadowJar") {
         )
     }
     from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
+    // Processed resources only - see buildPluginJar above.
     from(sourceSets.main.get().output)
-    from("src/main/resources")
 }
