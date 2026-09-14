@@ -7,6 +7,7 @@ import ai.rever.boss.plugin.api.GitDataProvider
 import ai.rever.boss.plugin.api.PanelComponentWithUI
 import ai.rever.boss.plugin.api.PanelInfo
 import ai.rever.boss.plugin.api.PluginStorageProvider
+import ai.rever.boss.plugin.api.ProjectData
 import ai.rever.boss.plugin.api.ProjectSearchProvider
 import ai.rever.boss.plugin.api.SplitViewOperations
 import androidx.compose.foundation.background
@@ -20,10 +21,10 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.Icon
@@ -36,7 +37,9 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.RememberObserver
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -53,6 +56,8 @@ import com.arkivanov.decompose.ComponentContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -101,12 +106,18 @@ class CodebaseComponent(
     private val getWindowId: () -> String?,
     private val getProjectPath: () -> String?,
     private val onSelectProject: ((String, String) -> Unit)?,
+    private val recentProjects: StateFlow<List<ProjectData>>? = null,
     private val aiGateway: () -> ai.rever.boss.plugin.api.AiGatewayAPI? = { null },
     private val aiUnavailable: () -> String? = { null }
 ) : PanelComponentWithUI, ComponentContext by ctx {
 
     @Composable
     override fun Content() {
+        val projectSelector = remember(directoryPickerProvider, onSelectProject) {
+            ProjectSelection(directoryPickerProvider, onSelectProject)
+        }
+        val recentsFlow = remember(recentProjects) { recentProjects ?: MutableStateFlow(emptyList()) }
+        val recents by recentsFlow.collectAsState()
         var selectedTab by remember { mutableStateOf(CodebaseTab.FILES) }
 
         // Both view models own a coroutine scope, so they are created once and
@@ -193,25 +204,43 @@ class CodebaseComponent(
         // (the top bar, the FILES picker, another panel), and only re-renders
         // when the value actually changes.
         var projectPath by remember { mutableStateOf(getProjectPath()) }
+        var projectRefreshRequest by remember { mutableStateOf(0) }
+        fun refreshProjectPath() {
+            val current = getProjectPath()
+            if (current != projectPath) {
+                projectPath = current
+                gitViewModel.onProjectChanged()
+                searchViewModel.clear()
+            }
+        }
         LaunchedEffect(Unit) {
             while (true) {
                 delay(PROJECT_POLL_MS)
-                val current = getProjectPath()
-                if (current != projectPath) {
-                    projectPath = current
-                    // GIT and SEARCH keep per-project state: the commit graph,
-                    // branch chip and result tree all describe the project
-                    // that was active when they loaded. Reset both against
-                    // the new project instead of keeping the previous one on
-                    // screen until a manual refresh.
-                    gitViewModel.onProjectChanged()
-                    searchViewModel.clear()
-                }
+                refreshProjectPath()
+            }
+        }
+        // Recents can arrive before the host commits its window path. A bounded
+        // burst catches that ordering and selections that leave recents unchanged.
+        LaunchedEffect(recents, projectRefreshRequest) {
+            repeat(20) {
+                refreshProjectPath()
+                delay(250L)
             }
         }
 
         Column(modifier = Modifier.fillMaxSize().background(CodebasePalette.Panel)) {
-            CodebaseProjectHeader(projectPath)
+            CodebaseProjectHeader(
+                projectPath = projectPath,
+                entries = remember(recents, projectPath) { ProjectSwitcherEntries.build(recents, projectPath) },
+                onSelect = {
+                    projectSelector.selectProject(it.name, it.path)
+                    projectRefreshRequest++
+                },
+                onOpenProject = {
+                    projectSelector.pickDirectory()
+                    projectRefreshRequest++
+                },
+            )
             CodebaseTabStrip(selected = selectedTab) { tab ->
                 selectedTab = tab
                 scope.launch(Dispatchers.IO) {
@@ -219,7 +248,9 @@ class CodebaseComponent(
                 }
             }
             when (selectedTab) {
-                CodebaseTab.FILES ->
+                // Reset project-scoped tree/selection/dialog state even when Compose
+                // skips children whose provider/getter parameters are unchanged.
+                CodebaseTab.FILES -> key(projectPath) {
                     CodebaseContent(
                         fileSystemDataProvider = fileSystemDataProvider,
                         directoryPickerProvider = directoryPickerProvider,
@@ -230,6 +261,7 @@ class CodebaseComponent(
                         getProjectPath = getProjectPath,
                         onSelectProject = onSelectProject,
                     )
+                }
 
                 CodebaseTab.SEARCH ->
                     CodebaseSearchContent(viewModel = searchViewModel, modifier = Modifier.fillMaxSize())
@@ -247,10 +279,16 @@ class CodebaseComponent(
  * home-collapsed underneath it, the full absolute path on hover.
  */
 @Composable
-private fun CodebaseProjectHeader(projectPath: String?) {
-    val path = projectPath.orEmpty()
+private fun CodebaseProjectHeader(
+    projectPath: String?,
+    entries: List<ProjectSwitcherEntry>,
+    onSelect: (ProjectSwitcherEntry) -> Unit,
+    onOpenProject: () -> Unit,
+) {
+    val path = PathUtils.trimTrailingSeparator(projectPath.orEmpty())
     val hasProject = path.isNotEmpty()
-    val name = if (hasProject) PathUtils.name(path).ifEmpty { path } else "No project"
+    val name = entries.firstOrNull { it.isCurrent }?.name
+        ?: if (hasProject) PathUtils.name(path).ifEmpty { path } else "No project"
     val display = if (hasProject) collapseHome(path) else "Open a folder in Files"
 
     CodebaseTooltip(
@@ -272,14 +310,11 @@ private fun CodebaseProjectHeader(projectPath: String?) {
             )
             Spacer(Modifier.width(6.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = name,
-                    fontSize = CodebaseMetrics.SecondaryText,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.2.sp,
-                    color = if (hasProject) CodebasePalette.Foreground else CodebasePalette.Muted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                ProjectSwitcher(
+                    projectName = name,
+                    entries = entries,
+                    onSelect = onSelect,
+                    onOpenProject = onOpenProject,
                 )
                 Text(
                     text = display,
@@ -337,10 +372,8 @@ internal fun collapseHome(
     }
 }
 
-/**
- * How often the selected project is sampled for the header. The getter changes
- * at most once per project switch (minutes apart at best), so 1s only added IPC
- * churn - 5s is indistinguishable in practice.
+/** Idle safety net: project getters can cross IPC, so avoid permanent fast polling.
+ * Recents and local selections trigger a short fast burst while the host settles.
  */
 private const val PROJECT_POLL_MS = 5_000L
 

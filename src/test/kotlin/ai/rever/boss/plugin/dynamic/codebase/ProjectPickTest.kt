@@ -1,0 +1,153 @@
+package ai.rever.boss.plugin.dynamic.codebase
+
+import ai.rever.boss.plugin.api.DirectoryPickerProvider
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * What the panel does with whatever the host's directory picker hands back.
+ *
+ * The macOS picker returns the directory WITH a trailing separator when nothing
+ * inside it was selected, and that shape is the one that used to reach the host
+ * as a project literally named "Unknown".
+ */
+class ProjectPickTest {
+    /** Answers the picker callback synchronously with [result]. */
+    private class FakePicker(private val result: String?) : DirectoryPickerProvider {
+        var invocations = 0
+        override fun pickDirectory(onResult: (String?) -> Unit) {
+            invocations++
+            onResult(result)
+        }
+    }
+
+    private class Recorder {
+        val selected = mutableListOf<Pair<String, String>>()
+        val callback: (String, String) -> Unit = { name, path -> selected += name to path }
+    }
+
+    private fun selection(picker: DirectoryPickerProvider?, recorder: Recorder?) =
+        ProjectSelection(picker, recorder?.callback)
+
+    @Test
+    fun `a trailing separator still names the project after its directory`() {
+        val recorder = Recorder()
+        selection(FakePicker("${separator()}dev${separator()}BossTerm${separator()}"), recorder).pickDirectory()
+
+        assertEquals(1, recorder.selected.size)
+        val (name, path) = recorder.selected.single()
+        assertEquals("BossTerm", name)
+        // The trailing separator is stripped before the host sees it, so the path
+        // matches what the recents list records for the same project.
+        assertEquals("${separator()}dev${separator()}BossTerm", path)
+    }
+
+    @Test
+    fun `a plain directory is passed through untouched`() {
+        val recorder = Recorder()
+        selection(FakePicker("${separator()}dev${separator()}Boss"), recorder).pickDirectory()
+
+        assertEquals("Boss" to "${separator()}dev${separator()}Boss", recorder.selected.single())
+    }
+
+    @Test
+    fun `a cancelled picker selects nothing`() {
+        val recorder = Recorder()
+        selection(FakePicker(null), recorder).pickDirectory()
+
+        assertTrue(recorder.selected.isEmpty())
+    }
+
+    @Test
+    fun `a picker that returns only whitespace selects nothing`() {
+        val recorder = Recorder()
+        selection(FakePicker("   "), recorder).pickDirectory()
+
+        assertTrue(recorder.selected.isEmpty())
+    }
+
+    @Test
+    fun `a filesystem root remains a valid project with a root label`() {
+        val recorder = Recorder()
+        selection(FakePicker(separator()), recorder).pickDirectory()
+        assertEquals(separator() to separator(), recorder.selected.single())
+    }
+
+    @Test
+    fun `no picker provider is a no-op rather than a crash`() {
+        val recorder = Recorder()
+        selection(null, recorder).pickDirectory()
+
+        assertTrue(recorder.selected.isEmpty())
+    }
+
+    @Test
+    fun `no selection callback is a no-op rather than a crash`() {
+        val picker = FakePicker("${separator()}dev${separator()}Boss")
+        selection(picker, null).pickDirectory()
+
+        assertEquals(1, picker.invocations)
+    }
+
+    @Test
+    fun `selectProject forwards a row's name and path verbatim`() {
+        val recorder = Recorder()
+        selection(null, recorder).selectProject("Boss", "${separator()}dev${separator()}Boss")
+
+        assertEquals("Boss" to "${separator()}dev${separator()}Boss", recorder.selected.single())
+    }
+
+    @Test
+    fun `trimTrailingSeparator keeps a filesystem root and both separators`() {
+        assertEquals("/dev/Boss", PathUtils.trimTrailingSeparator("/dev/Boss///", '/'))
+        assertEquals("""C:\dev\Boss""", PathUtils.trimTrailingSeparator("""C:\dev\Boss\""", '\\'))
+        // A root is all separator: keep one rather than empty it out.
+        assertEquals("/", PathUtils.trimTrailingSeparator("//", '/'))
+        assertEquals("/", PathUtils.trimTrailingSeparator("/", '/'))
+        assertEquals("C:/", PathUtils.trimTrailingSeparator("C:///", '/'))
+        assertEquals("   ", PathUtils.trimTrailingSeparator("   ", '/'))
+        assertEquals("C:\\", PathUtils.trimTrailingSeparator("C:\\\\", '\\'))
+        assertEquals("/dev/My Project ", PathUtils.trimTrailingSeparator("/dev/My Project /", '/'))
+    }
+
+    @Test
+    fun `selecting a legacy recent normalizes the host path`() {
+        val recorder = Recorder()
+        selection(null, recorder).selectProject("Boss", "${separator()}dev${separator()}Boss${separator()}")
+        assertEquals("Boss" to "${separator()}dev${separator()}Boss", recorder.selected.single())
+    }
+
+    @Test
+    fun `picker preserves spaces in directory names`() {
+        val recorder = Recorder()
+        selection(FakePicker("${separator()}dev${separator()}My Project ${separator()}"), recorder).pickDirectory()
+        assertEquals("My Project " to "${separator()}dev${separator()}My Project ", recorder.selected.single())
+    }
+
+    @Test
+    fun `throwing picker does not escape into composition`() {
+        val recorder = Recorder()
+        selection(object : DirectoryPickerProvider {
+            override fun pickDirectory(onResult: (String?) -> Unit) { error("unavailable") }
+        }, recorder).pickDirectory()
+        assertTrue(recorder.selected.isEmpty())
+    }
+
+    @Test
+    fun `throwing host selection does not crash caller`() {
+        ProjectSelection(null) { _, _ -> error("unavailable") }.selectProject("Boss", "/dev/Boss")
+    }
+
+    /**
+     * pickDirectory uses the PLATFORM separator (paths come from the host's
+     * File.absolutePath), so the fixtures have to as well.
+     */
+    private fun separator() = PathUtils.platformSeparator.toString()
+
+    @Test
+    fun `name of a trimmed path is never empty for a real directory`() {
+        assertEquals("Boss", PathUtils.name(PathUtils.trimTrailingSeparator("/dev/Boss/", '/'), '/'))
+        assertEquals("Boss", PathUtils.name(PathUtils.trimTrailingSeparator("/dev/Boss", '/'), '/'))
+    }
+}
