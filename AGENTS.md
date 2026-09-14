@@ -4,11 +4,11 @@
 
 **Codebase (Dynamic)** (`ai.rever.boss.plugin.dynamic.codebase`) is a dynamic plugin for the BOSS desktop application.
 
-Browse and explore project files
+FILES / SEARCH / GIT for the current project.
 
 - **Plugin ID**: `ai.rever.boss.plugin.dynamic.codebase`
 - **Main Class**: `ai.rever.boss.plugin.dynamic.codebase.CodebaseDynamicPlugin`
-- **API Version**: 1.0.20
+- **API Version**: 1.0.87 (`minApiVersion`); BOSS >= 9.5.7
 
 ## Essential Commands
 
@@ -36,7 +36,7 @@ build.gradle.kts   → Build config + version (single source of truth)
 - Entry point: `DynamicPlugin` interface with `register(context)` and `dispose()`
 - UI: `PanelComponentWithUI` with `@Composable Content()`
 - State: ViewModel pattern with `StateFlow`
-- Providers from `PluginContext`: `workspaceDataProvider`, `splitViewOperations`, `contextMenuProvider`, `activeTabsProvider`
+- Providers from `PluginContext`: `fileSystemDataProvider`, `splitViewOperations`, `contextMenuProvider`, `directoryPickerProvider`, `projectDataProvider`, `gitDataProvider`, `projectSearchProvider`
 - Null-safe provider access: providers may be null, UI must handle gracefully
 
 ### Dependencies

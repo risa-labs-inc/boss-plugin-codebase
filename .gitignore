@@ -4,3 +4,7 @@ build/
 *.iml
 local.properties
 .DS_Store
+
+# Eclipse/Kotlin-LSP build output. Regenerated on every IDE build; never tracked.
+bin/
+.kotlin/

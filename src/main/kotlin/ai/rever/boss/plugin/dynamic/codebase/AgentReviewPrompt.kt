@@ -1,0 +1,120 @@
+package ai.rever.boss.plugin.dynamic.codebase
+
+import ai.rever.boss.plugin.api.GitFileStatusData
+
+/**
+ * Prompt builder for the Agent Review feature (P7).
+ *
+ * Pure function so it is unit-testable: takes the changed-file listing plus
+ * whatever diff text was fetched (capped by the caller) and renders the
+ * review brief the Atlas agent receives.
+ */
+object AgentReviewPrompt {
+
+    /** Character budget the caller passes to the diff collector. */
+    const val INLINE_DIFF_BUDGET = 15_000
+
+    /** Marker the diff collector appends when a block had to be sliced. */
+    const val TRUNCATION_MARKER = "… [truncated]"
+
+    fun build(
+        projectPath: String,
+        staged: List<GitFileStatusData>,
+        unstaged: List<GitFileStatusData>,
+        diffText: String?,
+        /**
+         * Whether the collector left anything out - a sliced file, a file
+         * dropped for want of budget or past its file cap, or one whose diff
+         * would not fetch. Passed as a fact rather than sniffed back out of
+         * [diffText]: the marker only ever appeared on a file the collector
+         * sliced, so a run that simply stopped early looked complete.
+         */
+        diffTruncated: Boolean = false,
+        /** Free text from the review panel; empty when the user gave none. */
+        instructions: String = "",
+        /** Quick keeps it to a short pass; Deep asks for a thorough one. */
+        deep: Boolean = false,
+        /**
+         * The ref the change is being reviewed toward, e.g. "main".
+         *
+         * The attached diff is the UNCOMMITTED change, never a diff against
+         * this ref - collecting `baseRef..HEAD` inline would blow the budget
+         * on any branch more than a few commits old. The brief says so, and
+         * points the agent at git_diff_between for the committed half, which
+         * it can fetch itself if the review needs it.
+         */
+        baseRef: String = "",
+    ): String {
+        val sb = StringBuilder()
+        if (baseRef.isNotBlank()) {
+            sb.appendLine(
+                "Review these uncommitted changes (index + working tree) ahead of " +
+                    "landing them on `$baseRef`.",
+            )
+            sb.appendLine(
+                "Only the uncommitted change is attached. For the commits already on " +
+                    "this branch, call git_diff_between with from=`$baseRef`, to=`HEAD`.",
+            )
+        } else {
+            sb.appendLine("Review the uncommitted changes in this project (index + working tree vs HEAD).")
+        }
+        sb.appendLine()
+        sb.appendLine("Focus: correctness, bugs, security, naming, and whether the change does what it claims.")
+        if (deep) {
+            sb.appendLine(
+                "Go deep: trace the affected call paths, consider concurrency, error handling, " +
+                    "and edge cases, and check whether tests cover the change.",
+            )
+        } else {
+            sb.appendLine("Keep it quick: surface the issues that matter most, not an exhaustive audit.")
+        }
+        sb.appendLine("Be specific: cite file:line, say what is wrong, suggest a fix.")
+        sb.appendLine("Do not apply any edits; this is a review only.")
+        if (instructions.isNotBlank()) {
+            sb.appendLine()
+            sb.appendLine("The reviewer also asked:")
+            sb.appendLine(instructions.trim())
+        }
+        sb.appendLine()
+
+        if (staged.isEmpty() && unstaged.isEmpty()) {
+            sb.appendLine("There are no uncommitted changes in $projectPath.")
+            return sb.toString().trimEnd()
+        }
+
+        if (staged.isNotEmpty()) {
+            sb.appendLine("Staged files:")
+            staged.forEach { sb.appendLine("  [${it.indexStatus?.name ?: "?"}] ${it.path}") }
+            sb.appendLine()
+        }
+        if (unstaged.isNotEmpty()) {
+            sb.appendLine("Working-tree changes:")
+            unstaged.forEach { sb.appendLine("  [${it.workTreeStatus?.name ?: "?"}] ${it.path}") }
+            sb.appendLine()
+        }
+
+        if (diffText.isNullOrBlank()) {
+            sb.appendLine("The diff could not be fetched inline; use the git_diff / git_diff_all tools to read it.")
+        } else {
+            // Inline whatever the caller budgeted - do NOT re-test against
+            // INLINE_DIFF_BUDGET here. The collector truncates to fit but then
+            // appends a per-file header and the marker, so a truncated result
+            // lands a few characters OVER the budget. Re-testing would replace
+            // that text with a tool pointer and drop the diff exactly in the
+            // case the truncation exists to serve: one oversized file.
+            if (diffTruncated) {
+                sb.appendLine(
+                    "This diff is INCOMPLETE - it was cut to fit an inline budget. " +
+                        "Files below with no diff here, and any block ending in " +
+                        "\"$TRUNCATION_MARKER\", must be read with git_diff before you " +
+                        "draw conclusions about them.",
+                )
+            }
+            sb.appendLine("Full diff:")
+            sb.appendLine("```diff")
+            sb.appendLine(diffText)
+            sb.appendLine("```")
+        }
+        return sb.toString().trimEnd()
+    }
+}

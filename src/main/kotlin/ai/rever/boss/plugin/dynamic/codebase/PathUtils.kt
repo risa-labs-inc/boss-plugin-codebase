@@ -34,7 +34,7 @@ object PathUtils {
         path.startsWith(ancestor + separator)
 
     /**
-     * [path] with trailing separators and stray whitespace removed.
+     * [path] with trailing separators removed (whitespace is part of the name).
      *
      * Not a normalization of the separator itself (see the class note): this only
      * strips what a SOURCE appended. The macOS directory picker returns
@@ -43,7 +43,12 @@ object PathUtils {
      * root keeps its single separator rather than collapsing to "".
      */
     fun trimTrailingSeparator(path: String, separator: Char = platformSeparator): String {
-        val trimmed = path.trim()
+        val trimmed = path
+        // A drive root must remain absolute, rather than becoming drive-relative.
+        if (separator == '\\' && path.length >= 3 && path[0].isLetter() &&
+            path[1] == ':' && path.substring(2).all { it == separator }) {
+            return path.take(3)
+        }
         if (trimmed.length <= 1) return trimmed
         return trimmed.trimEnd(separator).ifEmpty { separator.toString() }
     }

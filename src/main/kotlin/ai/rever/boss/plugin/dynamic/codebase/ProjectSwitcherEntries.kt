@@ -5,10 +5,8 @@ import ai.rever.boss.plugin.api.ProjectData
 /**
  * One row in the header's project dropdown.
  *
- * [path] is the host's string VERBATIM, not the normalized key used for
- * matching — it is handed straight back to ProjectDataProvider.selectProject,
- * and PathUtils' contract is that paths stay byte-identical to what their
- * source emitted.
+ * [path] retains the host's string for row identity. Selection normalizes
+ * trailing separators at the ViewModel boundary before returning it to the host.
  */
 internal data class ProjectSwitcherEntry(
     val name: String,
@@ -89,8 +87,7 @@ internal object ProjectSwitcherEntries {
 
     /**
      * Normalized form used for dedupe and current-project matching only.
-     * Trailing separators and stray whitespace are the two ways the same
-     * project arrives looking like two.
+     * Only trailing separators are ignored; whitespace can belong to a name.
      */
     private fun matchKey(path: String, separator: Char): String =
         PathUtils.trimTrailingSeparator(path, separator)

@@ -3,7 +3,6 @@ package ai.rever.boss.plugin.dynamic.codebase
 import ai.rever.boss.plugin.api.ContextMenuProvider
 import ai.rever.boss.plugin.api.DirectoryPickerProvider
 import ai.rever.boss.plugin.api.FileSystemDataProvider
-import ai.rever.boss.plugin.api.ProjectData
 import ai.rever.boss.plugin.api.SplitViewOperations
 import ai.rever.boss.plugin.ui.BossDialog
 import ai.rever.boss.plugin.ui.BossTheme
@@ -49,6 +48,7 @@ import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -56,8 +56,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 
 // UI chrome colors now consume reactive BOSS theme tokens so the panel
 // re-skins automatically when the host theme changes. These are thin aliases
@@ -71,7 +69,7 @@ private val BossLinkBlue: Color get() = BossThemeColors.AccentColor
 private val BossErrorRed: Color get() = BossThemeColors.ErrorColor
 private val BossTextColor: Color get() = BossThemeColors.TextPrimary
 // Empty-space sizing assumes every visible tree/status row uses this height.
-private val TreeRowHeight = 26.dp
+private val TreeRowHeight = CodebaseMetrics.RowHeight
 
 /**
  * Main content composable for the Codebase panel.
@@ -87,8 +85,7 @@ fun CodebaseContent(
     scope: CoroutineScope,
     getWindowId: () -> String?,
     getProjectPath: () -> String?,
-    onSelectProject: ((String, String) -> Unit)?,
-    recentProjects: StateFlow<List<ProjectData>>?
+    onSelectProject: ((String, String) -> Unit)?
 ) {
     val viewModel = remember(fileSystemDataProvider, directoryPickerProvider, splitViewOperations) {
         CodebaseViewModel(
@@ -112,14 +109,6 @@ fun CodebaseContent(
     val projectPath = getProjectPath()
     val projectName = projectPath?.let { PathUtils.name(it) }?.ifEmpty { "Project" } ?: ""
     val hasProject = !projectPath.isNullOrEmpty()
-
-    // Null on hosts that expose no ProjectDataProvider: the switcher then offers
-    // only "Open Project...", which is exactly what the header did before it.
-    val recentProjectsFlow = remember(recentProjects) { recentProjects ?: MutableStateFlow(emptyList()) }
-    val recents by recentProjectsFlow.collectAsState()
-    val switcherEntries = remember(recents, projectPath) {
-        ProjectSwitcherEntries.build(recents, projectPath)
-    }
 
     val tree by viewModel.fileTree.collectAsState()
     val expandedPaths by viewModel.expandedPaths.collectAsState()
@@ -212,67 +201,67 @@ fun CodebaseContent(
                 }
             }
         } else {
-            // Header with project info
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = BossHeaderColor,
-                elevation = 1.dp
+            // Section header. The project is named once, by the panel's own
+            // header above the tab strip - repeating it here (at 14.sp, in a
+            // second elevated bar) gave the panel two competing titles.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(CodebaseMetrics.SectionHeaderHeight + 4.dp)
+                    .padding(horizontal = CodebaseMetrics.Gutter),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    ProjectSwitcher(
-                        projectName = projectName,
-                        entries = switcherEntries,
-                        onSelect = { entry -> viewModel.selectProject(entry.name, entry.path) },
-                        onOpenProject = { viewModel.pickDirectory() },
-                        modifier = Modifier.weight(1f)
-                    )
-                    // Hidden on host binaries that predate the showHidden
-                    // overloads — the flag would be silently ignored there.
-                    if (viewModel.supportsShowHidden) {
-                        TooltipArea(
-                            modifier = Modifier.padding(start = 4.dp, end = 4.dp),
-                            tooltip = {
-                                Surface(
-                                    color = BossHeaderColor,
-                                    shape = RoundedCornerShape(4.dp),
-                                    elevation = 4.dp,
-                                    border = BorderStroke(1.dp, BossDarkBorder)
-                                ) {
-                                    Text(
-                                        text = if (showHidden) {
-                                            "Hide hidden files (dotfiles)"
-                                        } else {
-                                            "Show hidden files (dotfiles) — build/ and node_modules/ stay hidden"
-                                        },
-                                        fontSize = 11.sp,
-                                        color = BossTextColor,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                    )
-                                }
+                Text(
+                    text = "EXPLORER",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.0.sp,
+                    color = BossThemeColors.TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                // Hidden on host binaries that predate the showHidden
+                // overloads — the flag would be silently ignored there.
+                if (viewModel.supportsShowHidden) {
+                    TooltipArea(
+                        tooltip = {
+                            Surface(
+                                color = BossHeaderColor,
+                                shape = RoundedCornerShape(4.dp),
+                                elevation = 4.dp,
+                                border = BorderStroke(1.dp, BossDarkBorder)
+                            ) {
+                                Text(
+                                    text = if (showHidden) {
+                                        "Hide hidden files (dotfiles)"
+                                    } else {
+                                        "Show hidden files (dotfiles) — build/ and node_modules/ stay hidden"
+                                    },
+                                    fontSize = 11.sp,
+                                    color = BossTextColor,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
                             }
-                        ) {
-                            Icon(
-                                imageVector = if (showHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                                contentDescription = if (showHidden) "Hide hidden files (dotfiles)" else "Show hidden files (dotfiles)",
-                                tint = if (showHidden) BossAccentBlue else BossDarkTextSecondary,
-                                modifier = Modifier
-                                    .size(18.dp)
-                                    .clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null
-                                    ) { viewModel.setShowHidden(!showHidden) }
-                            )
                         }
+                    ) {
+                        Icon(
+                            imageVector = if (showHidden) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                            contentDescription = if (showHidden) "Hide hidden files (dotfiles)" else "Show hidden files (dotfiles)",
+                            tint = if (showHidden) BossAccentBlue else BossDarkTextSecondary,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { viewModel.setShowHidden(!showHidden) }
+                        )
                     }
                 }
             }
 
-            Divider(color = BossDarkBorder)
+            CodebaseHRule()
 
             // File tree, fully virtualized: the visible tree is flattened into
             // one LazyColumn item per row (issue #8), so deep expanded subtrees

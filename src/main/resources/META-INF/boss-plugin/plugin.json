@@ -2,13 +2,13 @@
   "manifestVersion": 1,
   "pluginId": "ai.rever.boss.plugin.dynamic.codebase",
   "displayName": "Codebase (Dynamic)",
-  "version": "1.0.10",
-  "apiVersion": "1.0.72",
-  "minApiVersion": "1.0.72",
-  "minBossVersion": "9.2.20",
+  "version": "0.0.0-dev",
+  "apiVersion": "1.0.87",
+  "minApiVersion": "1.0.87",
+  "minBossVersion": "9.5.7",
   "mainClass": "ai.rever.boss.plugin.dynamic.codebase.CodebaseDynamicPlugin",
   "type": "panel",
-  "description": "Browse and explore project files",
+  "description": "Files, global search & replace, and git status/log/graph for the current project",
   "author": "Risa Labs",
   "url": "https://github.com/risa-labs-inc/boss-plugin-codebase",
   "panel": {
@@ -22,5 +22,15 @@
   },
   "isolationMode": "out-of-process",
   "fallback": "in-process",
-  "stateHolderClass": "ai.rever.boss.plugin.runtime.stateholders.CodebaseStateHolder"
+  "stateHolderClass": "ai.rever.boss.plugin.runtime.stateholders.CodebaseStateHolder",
+  "definedPermissions": [
+    {
+      "name": "project.replace",
+      "description": "Replace occurrences across an explicit file list in the project (project_replace)"
+    },
+    {
+      "name": "git.write",
+      "description": "Mutate git state from an agent: stage, unstage, discard, checkout, cherry-pick, revert"
+    }
+  ]
 }

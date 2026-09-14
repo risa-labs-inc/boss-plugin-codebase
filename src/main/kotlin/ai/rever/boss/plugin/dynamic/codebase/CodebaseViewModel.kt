@@ -581,7 +581,7 @@ class CodebaseViewModel(
             // nothing inside it was selected, and PathUtils.name of that is "" -
             // which is how such a project ended up named "Unknown".
             val path = PathUtils.trimTrailingSeparator(picked.orEmpty())
-            if (path.isEmpty()) {
+            if (path.isBlank()) {
                 logger.info(LogCategory.FILE, "Project picker dismissed with no directory")
                 return@pickDirectory
             }
@@ -604,7 +604,7 @@ class CodebaseViewModel(
             return
         }
         logger.info(LogCategory.FILE, "Selecting project", mapOf("name" to name, "path" to path))
-        select(name, path)
+        select(name, PathUtils.trimTrailingSeparator(path))
     }
 
     /**

@@ -4,6 +4,7 @@ import ai.rever.boss.plugin.api.DirectoryPickerProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlin.test.Test
+import kotlin.test.AfterTest
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -16,6 +17,11 @@ import kotlin.test.assertTrue
  * as a project literally named "Unknown".
  */
 class ProjectPickTest {
+    private val models = mutableListOf<CodebaseViewModel>()
+
+    @AfterTest
+    fun disposeModels() { models.forEach { it.dispose() } }
+
 
     /** Answers the picker callback synchronously with [result]. */
     private class FakePicker(private val result: String?) : DirectoryPickerProvider {
@@ -39,7 +45,7 @@ class ProjectPickTest {
         getWindowId = { null },
         getProjectPath = { null },
         onSelectProject = recorder?.callback
-    )
+    ).also { models += it }
 
     @Test
     fun `a trailing separator still names the project after its directory`() {
@@ -109,7 +115,23 @@ class ProjectPickTest {
         // A root is all separator: keep one rather than empty it out.
         assertEquals("/", PathUtils.trimTrailingSeparator("//", '/'))
         assertEquals("/", PathUtils.trimTrailingSeparator("/", '/'))
-        assertEquals("", PathUtils.trimTrailingSeparator("   ", '/'))
+        assertEquals("   ", PathUtils.trimTrailingSeparator("   ", '/'))
+        assertEquals("C:\\", PathUtils.trimTrailingSeparator("C:\\\\", '\\'))
+        assertEquals("/dev/My Project ", PathUtils.trimTrailingSeparator("/dev/My Project /", '/'))
+    }
+
+    @Test
+    fun `selecting a legacy recent normalizes the host path`() {
+        val recorder = Recorder()
+        viewModel(null, recorder).selectProject("Boss", "${separator()}dev${separator()}Boss${separator()}")
+        assertEquals("Boss" to "${separator()}dev${separator()}Boss", recorder.selected.single())
+    }
+
+    @Test
+    fun `picker preserves spaces in directory names`() {
+        val recorder = Recorder()
+        viewModel(FakePicker("${separator()}dev${separator()}My Project ${separator()}"), recorder).pickDirectory()
+        assertEquals("My Project " to "${separator()}dev${separator()}My Project ", recorder.selected.single())
     }
 
     /**

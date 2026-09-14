@@ -19,9 +19,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.Divider
 import androidx.compose.material.Icon
 import androidx.compose.material.Surface
@@ -85,8 +86,11 @@ internal fun ProjectSwitcher(
         // One frame is what it takes for the menu window to be disposed; the host's
         // picker then adds its own invokeLater hop before it reads the active window.
         withFrameNanos { }
-        pickPending = false
-        onOpenProject()
+        try {
+            onOpenProject()
+        } finally {
+            pickPending = false
+        }
     }
 
     // Column, not Box: BossPopup measures a zero-size probe wherever it is
@@ -176,12 +180,10 @@ private fun ProjectSwitcherMenu(
             if (entries.isNotEmpty()) {
                 // Capped and scrollable: the host's recents list has no bound, and
                 // a menu taller than the window cannot be dismissed by its own rows.
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = MenuRowHeight * 9)
-                        .verticalScroll(rememberScrollState())
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 360.dp)
                 ) {
-                    entries.forEach { entry ->
+                    items(entries, key = { it.path }) { entry ->
                         ProjectRow(entry = entry, onClick = { onSelect(entry) })
                     }
                 }
@@ -199,7 +201,7 @@ private fun ProjectSwitcherMenu(
 @Composable
 private fun ProjectRow(entry: ProjectSwitcherEntry, onClick: () -> Unit) {
     val location = remember(entry.path) { ProjectSwitcherEntries.locationLabel(entry.path) }
-    MenuRow(onClick = onClick) {
+    MenuRow(onClick = onClick, enabled = !entry.isCurrent) {
         // The check occupies the icon column on the current row, so names stay
         // aligned whether or not a row is the current one.
         if (entry.isCurrent) {
@@ -264,15 +266,15 @@ private fun MenuActionRow(icon: ImageVector, label: String, onClick: () -> Unit)
 }
 
 @Composable
-private fun MenuRow(onClick: () -> Unit, content: @Composable RowScope.() -> Unit) {
+private fun MenuRow(onClick: () -> Unit, enabled: Boolean = true, content: @Composable RowScope.() -> Unit) {
     val interactionSource = remember { MutableInteractionSource() }
     val hovered by interactionSource.collectIsHoveredAsState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = MenuRowHeight)
-            .background(if (hovered) BossThemeColors.BorderColor.copy(alpha = 0.45f) else Color.Transparent)
-            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+            .background(if (hovered && enabled) BossThemeColors.BorderColor.copy(alpha = 0.45f) else Color.Transparent)
+            .clickable(interactionSource = interactionSource, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
