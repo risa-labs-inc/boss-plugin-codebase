@@ -75,14 +75,8 @@ internal object ProjectSwitcherEntries {
     ): String {
         val parent = PathUtils.parent(matchKey(path, separator), separator)
         if (parent.isEmpty()) return ""
-        val home = homeDirectory?.let { matchKey(it, separator) }.orEmpty()
-        return when {
-            home.isEmpty() -> parent
-            parent == home -> "~"
-            PathUtils.isNestedUnder(parent, home, separator) ->
-                "~$separator${PathUtils.relativize(parent, home, separator)}"
-            else -> parent
-        }
+        return collapseHome(parent, separator, homeDirectory)
+
     }
 
     /**

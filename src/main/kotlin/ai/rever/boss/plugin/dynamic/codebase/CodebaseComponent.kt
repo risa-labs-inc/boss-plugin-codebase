@@ -7,6 +7,7 @@ import ai.rever.boss.plugin.api.GitDataProvider
 import ai.rever.boss.plugin.api.PanelComponentWithUI
 import ai.rever.boss.plugin.api.PanelInfo
 import ai.rever.boss.plugin.api.PluginStorageProvider
+import ai.rever.boss.plugin.api.ProjectData
 import ai.rever.boss.plugin.api.ProjectSearchProvider
 import ai.rever.boss.plugin.api.SplitViewOperations
 import androidx.compose.foundation.background
@@ -20,10 +21,10 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.Icon
@@ -33,11 +34,12 @@ import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Inventory2
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.runtime.key
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.RememberObserver
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -51,13 +53,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.arkivanov.decompose.ComponentContext
-import ai.rever.boss.plugin.api.ProjectData
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -113,17 +113,9 @@ class CodebaseComponent(
 
     @Composable
     override fun Content() {
-        val projectSelector = remember {
-            DisposedWhenGone(CodebaseViewModel(
-                fileSystemDataProvider = null,
-                directoryPickerProvider = directoryPickerProvider,
-                splitViewOperations = splitViewOperations,
-                scope = scope,
-                getWindowId = getWindowId,
-                getProjectPath = getProjectPath,
-                onSelectProject = onSelectProject,
-            )) { it.dispose() }
-        }.value
+        val projectSelector = remember(directoryPickerProvider, onSelectProject) {
+            ProjectSelection(directoryPickerProvider, onSelectProject)
+        }
         val recentsFlow = remember(recentProjects) { recentProjects ?: MutableStateFlow(emptyList()) }
         val recents by recentsFlow.collectAsState()
         var selectedTab by remember { mutableStateOf(CodebaseTab.FILES) }
@@ -232,7 +224,7 @@ class CodebaseComponent(
         Column(modifier = Modifier.fillMaxSize().background(CodebasePalette.Panel)) {
             CodebaseProjectHeader(
                 projectPath = projectPath,
-                entries = ProjectSwitcherEntries.build(recents, projectPath),
+                entries = remember(recents, projectPath) { ProjectSwitcherEntries.build(recents, projectPath) },
                 onSelect = { projectSelector.selectProject(it.name, it.path) },
                 onOpenProject = { projectSelector.pickDirectory() },
             )
@@ -243,6 +235,8 @@ class CodebaseComponent(
                 }
             }
             when (selectedTab) {
+                // Reset project-scoped tree/selection/dialog state even when Compose
+                // skips children whose provider/getter parameters are unchanged.
                 CodebaseTab.FILES -> key(projectPath) {
                     CodebaseContent(
                         fileSystemDataProvider = fileSystemDataProvider,
@@ -364,12 +358,8 @@ internal fun collapseHome(
     }
 }
 
-/**
- * How often the selected project is sampled for the header. The getter changes
- * at most once per project switch (minutes apart at best), so 1s only added IPC
- * churn - 5s is indistinguishable in practice.
- */
-private const val PROJECT_POLL_MS = 5_000L
+/** Follow confirmed host changes promptly; selection may be asynchronous or cancelled. */
+private const val PROJECT_POLL_MS = 250L
 
 /** Splitter position when storage holds none. Matches CodebaseSplitter's clamp midpoint. */
 private const val DEFAULT_SPLIT = 0.55f

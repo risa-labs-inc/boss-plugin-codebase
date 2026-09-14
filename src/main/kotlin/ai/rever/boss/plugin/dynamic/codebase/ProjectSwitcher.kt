@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Divider
 import androidx.compose.material.Icon
@@ -45,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -201,7 +201,7 @@ private fun ProjectSwitcherMenu(
 @Composable
 private fun ProjectRow(entry: ProjectSwitcherEntry, onClick: () -> Unit) {
     val location = remember(entry.path) { ProjectSwitcherEntries.locationLabel(entry.path) }
-    MenuRow(onClick = onClick, enabled = !entry.isCurrent) {
+    MenuRow(onClick = onClick, showHover = !entry.isCurrent) {
         // The check occupies the icon column on the current row, so names stay
         // aligned whether or not a row is the current one.
         if (entry.isCurrent) {
@@ -266,15 +266,15 @@ private fun MenuActionRow(icon: ImageVector, label: String, onClick: () -> Unit)
 }
 
 @Composable
-private fun MenuRow(onClick: () -> Unit, enabled: Boolean = true, content: @Composable RowScope.() -> Unit) {
+private fun MenuRow(onClick: () -> Unit, showHover: Boolean = true, content: @Composable RowScope.() -> Unit) {
     val interactionSource = remember { MutableInteractionSource() }
     val hovered by interactionSource.collectIsHoveredAsState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = MenuRowHeight)
-            .background(if (hovered && enabled) BossThemeColors.BorderColor.copy(alpha = 0.45f) else Color.Transparent)
-            .clickable(interactionSource = interactionSource, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
+            .background(if (hovered && showHover) BossThemeColors.BorderColor.copy(alpha = 0.45f) else Color.Transparent)
+            .clickable(interactionSource = interactionSource, indication = null, role = Role.Button, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

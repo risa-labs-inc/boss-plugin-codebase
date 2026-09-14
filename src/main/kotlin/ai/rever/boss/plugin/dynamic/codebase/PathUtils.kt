@@ -43,14 +43,13 @@ object PathUtils {
      * root keeps its single separator rather than collapsing to "".
      */
     fun trimTrailingSeparator(path: String, separator: Char = platformSeparator): String {
-        val trimmed = path
         // A drive root must remain absolute, rather than becoming drive-relative.
-        if (separator == '\\' && path.length >= 3 && path[0].isLetter() &&
+        if (path.length >= 3 && path[0].isLetter() &&
             path[1] == ':' && path.substring(2).all { it == separator }) {
             return path.take(3)
         }
-        if (trimmed.length <= 1) return trimmed
-        return trimmed.trimEnd(separator).ifEmpty { separator.toString() }
+        if (path.length <= 1) return path
+        return path.trimEnd(separator).ifEmpty { separator.toString() }
     }
 
     /** [path] relative to [root], or [path] unchanged when it isn't under root. */

@@ -1,12 +1,8 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
 import ai.rever.boss.plugin.api.DirectoryPickerProvider
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlin.test.Test
-import kotlin.test.AfterTest
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -17,12 +13,6 @@ import kotlin.test.assertTrue
  * as a project literally named "Unknown".
  */
 class ProjectPickTest {
-    private val models = mutableListOf<CodebaseViewModel>()
-
-    @AfterTest
-    fun disposeModels() { models.forEach { it.dispose() } }
-
-
     /** Answers the picker callback synchronously with [result]. */
     private class FakePicker(private val result: String?) : DirectoryPickerProvider {
         var invocations = 0
@@ -37,20 +27,13 @@ class ProjectPickTest {
         val callback: (String, String) -> Unit = { name, path -> selected += name to path }
     }
 
-    private fun viewModel(picker: DirectoryPickerProvider?, recorder: Recorder?) = CodebaseViewModel(
-        fileSystemDataProvider = null,
-        directoryPickerProvider = picker,
-        splitViewOperations = null,
-        scope = CoroutineScope(Dispatchers.Unconfined),
-        getWindowId = { null },
-        getProjectPath = { null },
-        onSelectProject = recorder?.callback
-    ).also { models += it }
+    private fun selection(picker: DirectoryPickerProvider?, recorder: Recorder?) =
+        ProjectSelection(picker, recorder?.callback)
 
     @Test
     fun `a trailing separator still names the project after its directory`() {
         val recorder = Recorder()
-        viewModel(FakePicker("${separator()}dev${separator()}BossTerm${separator()}"), recorder).pickDirectory()
+        selection(FakePicker("${separator()}dev${separator()}BossTerm${separator()}"), recorder).pickDirectory()
 
         assertEquals(1, recorder.selected.size)
         val (name, path) = recorder.selected.single()
@@ -63,7 +46,7 @@ class ProjectPickTest {
     @Test
     fun `a plain directory is passed through untouched`() {
         val recorder = Recorder()
-        viewModel(FakePicker("${separator()}dev${separator()}Boss"), recorder).pickDirectory()
+        selection(FakePicker("${separator()}dev${separator()}Boss"), recorder).pickDirectory()
 
         assertEquals("Boss" to "${separator()}dev${separator()}Boss", recorder.selected.single())
     }
@@ -71,7 +54,7 @@ class ProjectPickTest {
     @Test
     fun `a cancelled picker selects nothing`() {
         val recorder = Recorder()
-        viewModel(FakePicker(null), recorder).pickDirectory()
+        selection(FakePicker(null), recorder).pickDirectory()
 
         assertTrue(recorder.selected.isEmpty())
     }
@@ -79,7 +62,7 @@ class ProjectPickTest {
     @Test
     fun `a picker that returns only separators selects nothing`() {
         val recorder = Recorder()
-        viewModel(FakePicker("   "), recorder).pickDirectory()
+        selection(FakePicker("   "), recorder).pickDirectory()
 
         assertTrue(recorder.selected.isEmpty())
     }
@@ -87,7 +70,7 @@ class ProjectPickTest {
     @Test
     fun `no picker provider is a no-op rather than a crash`() {
         val recorder = Recorder()
-        viewModel(null, recorder).pickDirectory()
+        selection(null, recorder).pickDirectory()
 
         assertTrue(recorder.selected.isEmpty())
     }
@@ -95,7 +78,7 @@ class ProjectPickTest {
     @Test
     fun `no selection callback is a no-op rather than a crash`() {
         val picker = FakePicker("${separator()}dev${separator()}Boss")
-        viewModel(picker, null).pickDirectory()
+        selection(picker, null).pickDirectory()
 
         assertEquals(1, picker.invocations)
     }
@@ -103,7 +86,7 @@ class ProjectPickTest {
     @Test
     fun `selectProject forwards a row's name and path verbatim`() {
         val recorder = Recorder()
-        viewModel(null, recorder).selectProject("Boss", "${separator()}dev${separator()}Boss")
+        selection(null, recorder).selectProject("Boss", "${separator()}dev${separator()}Boss")
 
         assertEquals("Boss" to "${separator()}dev${separator()}Boss", recorder.selected.single())
     }
@@ -115,6 +98,7 @@ class ProjectPickTest {
         // A root is all separator: keep one rather than empty it out.
         assertEquals("/", PathUtils.trimTrailingSeparator("//", '/'))
         assertEquals("/", PathUtils.trimTrailingSeparator("/", '/'))
+        assertEquals("C:/", PathUtils.trimTrailingSeparator("C:///", '/'))
         assertEquals("   ", PathUtils.trimTrailingSeparator("   ", '/'))
         assertEquals("C:\\", PathUtils.trimTrailingSeparator("C:\\\\", '\\'))
         assertEquals("/dev/My Project ", PathUtils.trimTrailingSeparator("/dev/My Project /", '/'))
@@ -123,15 +107,29 @@ class ProjectPickTest {
     @Test
     fun `selecting a legacy recent normalizes the host path`() {
         val recorder = Recorder()
-        viewModel(null, recorder).selectProject("Boss", "${separator()}dev${separator()}Boss${separator()}")
+        selection(null, recorder).selectProject("Boss", "${separator()}dev${separator()}Boss${separator()}")
         assertEquals("Boss" to "${separator()}dev${separator()}Boss", recorder.selected.single())
     }
 
     @Test
     fun `picker preserves spaces in directory names`() {
         val recorder = Recorder()
-        viewModel(FakePicker("${separator()}dev${separator()}My Project ${separator()}"), recorder).pickDirectory()
+        selection(FakePicker("${separator()}dev${separator()}My Project ${separator()}"), recorder).pickDirectory()
         assertEquals("My Project " to "${separator()}dev${separator()}My Project ", recorder.selected.single())
+    }
+
+    @Test
+    fun `throwing picker does not escape into composition`() {
+        val recorder = Recorder()
+        selection(object : DirectoryPickerProvider {
+            override fun pickDirectory(onResult: (String?) -> Unit) { error("unavailable") }
+        }, recorder).pickDirectory()
+        assertTrue(recorder.selected.isEmpty())
+    }
+
+    @Test
+    fun `throwing host selection does not crash caller`() {
+        ProjectSelection(null) { _, _ -> error("unavailable") }.selectProject("Boss", "/dev/Boss")
     }
 
     /**
@@ -142,10 +140,7 @@ class ProjectPickTest {
 
     @Test
     fun `name of a trimmed path is never empty for a real directory`() {
-        assertNull(
-            listOf("/dev/Boss/", "/dev/Boss")
-                .map { PathUtils.name(PathUtils.trimTrailingSeparator(it, '/'), '/') }
-                .firstOrNull { it.isEmpty() }
-        )
+        assertEquals("Boss", PathUtils.name(PathUtils.trimTrailingSeparator("/dev/Boss/", '/'), '/'))
+        assertEquals("Boss", PathUtils.name(PathUtils.trimTrailingSeparator("/dev/Boss", '/'), '/'))
     }
 }
