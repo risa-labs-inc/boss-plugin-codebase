@@ -68,5 +68,4 @@ internal class ProjectSelection(
             logger.warn(LogCategory.FILE, "Project selection failed", mapOf("error" to failure.toString()))
         }
     }
-
 }

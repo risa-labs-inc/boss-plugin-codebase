@@ -76,7 +76,6 @@ internal object ProjectSwitcherEntries {
         val parent = PathUtils.parent(matchKey(path, separator), separator)
         if (parent.isEmpty()) return ""
         return collapseHome(parent, separator, homeDirectory)
-
     }
 
     /**

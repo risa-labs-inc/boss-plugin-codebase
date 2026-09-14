@@ -1,5 +1,7 @@
 package ai.rever.boss.plugin.dynamic.codebase
 
+import ai.rever.boss.plugin.logging.BossLogger
+import ai.rever.boss.plugin.logging.LogCategory
 import ai.rever.boss.plugin.ui.BossPopup
 import ai.rever.boss.plugin.ui.BossPopupAnchoring
 import ai.rever.boss.plugin.ui.BossThemeColors
@@ -69,6 +71,7 @@ internal fun ProjectSwitcher(
     onOpenProject: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val logger = remember { BossLogger.forComponent("ProjectSwitcher") }
     var expanded by remember { mutableStateOf(false) }
     // A pick asked for from inside the menu, deliberately NOT run from inside it.
     // On the heavyweight path the menu is its own always-on-top AWT window, and
@@ -87,6 +90,7 @@ internal fun ProjectSwitcher(
         // picker then adds its own invokeLater hop before it reads the active window.
         withFrameNanos { }
         try {
+            logger.info(LogCategory.FILE, "Dispatching deferred project picker after popup dismissal")
             onOpenProject()
         } finally {
             pickPending = false
@@ -104,7 +108,7 @@ internal fun ProjectSwitcher(
                 .background(
                     if (hovered || expanded) BossThemeColors.BorderColor.copy(alpha = 0.45f) else Color.Transparent
                 )
-                .clickable(interactionSource = interactionSource, indication = null) { expanded = !expanded }
+                .clickable(interactionSource = interactionSource, indication = null, role = Role.Button) { expanded = !expanded }
                 .padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {

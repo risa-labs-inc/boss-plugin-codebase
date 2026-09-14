@@ -204,20 +204,27 @@ class CodebaseComponent(
         // (the top bar, the FILES picker, another panel), and only re-renders
         // when the value actually changes.
         var projectPath by remember { mutableStateOf(getProjectPath()) }
+        var projectRefreshRequest by remember { mutableStateOf(0) }
+        fun refreshProjectPath() {
+            val current = getProjectPath()
+            if (current != projectPath) {
+                projectPath = current
+                gitViewModel.onProjectChanged()
+                searchViewModel.clear()
+            }
+        }
         LaunchedEffect(Unit) {
             while (true) {
                 delay(PROJECT_POLL_MS)
-                val current = getProjectPath()
-                if (current != projectPath) {
-                    projectPath = current
-                    // GIT and SEARCH keep per-project state: the commit graph,
-                    // branch chip and result tree all describe the project
-                    // that was active when they loaded. Reset both against
-                    // the new project instead of keeping the previous one on
-                    // screen until a manual refresh.
-                    gitViewModel.onProjectChanged()
-                    searchViewModel.clear()
-                }
+                refreshProjectPath()
+            }
+        }
+        // Recents can arrive before the host commits its window path. A bounded
+        // burst catches that ordering and selections that leave recents unchanged.
+        LaunchedEffect(recents, projectRefreshRequest) {
+            repeat(20) {
+                refreshProjectPath()
+                delay(250L)
             }
         }
 
@@ -225,8 +232,14 @@ class CodebaseComponent(
             CodebaseProjectHeader(
                 projectPath = projectPath,
                 entries = remember(recents, projectPath) { ProjectSwitcherEntries.build(recents, projectPath) },
-                onSelect = { projectSelector.selectProject(it.name, it.path) },
-                onOpenProject = { projectSelector.pickDirectory() },
+                onSelect = {
+                    projectSelector.selectProject(it.name, it.path)
+                    projectRefreshRequest++
+                },
+                onOpenProject = {
+                    projectSelector.pickDirectory()
+                    projectRefreshRequest++
+                },
             )
             CodebaseTabStrip(selected = selectedTab) { tab ->
                 selectedTab = tab
@@ -274,7 +287,8 @@ private fun CodebaseProjectHeader(
 ) {
     val path = PathUtils.trimTrailingSeparator(projectPath.orEmpty())
     val hasProject = path.isNotEmpty()
-    val name = if (hasProject) PathUtils.name(path).ifEmpty { path } else "No project"
+    val name = entries.firstOrNull { it.isCurrent }?.name
+        ?: if (hasProject) PathUtils.name(path).ifEmpty { path } else "No project"
     val display = if (hasProject) collapseHome(path) else "Open a folder in Files"
 
     CodebaseTooltip(
@@ -358,8 +372,10 @@ internal fun collapseHome(
     }
 }
 
-/** Follow confirmed host changes promptly; selection may be asynchronous or cancelled. */
-private const val PROJECT_POLL_MS = 250L
+/** Idle safety net: project getters can cross IPC, so avoid permanent fast polling.
+ * Recents and local selections trigger a short fast burst while the host settles.
+ */
+private const val PROJECT_POLL_MS = 5_000L
 
 /** Splitter position when storage holds none. Matches CodebaseSplitter's clamp midpoint. */
 private const val DEFAULT_SPLIT = 0.55f

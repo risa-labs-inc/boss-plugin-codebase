@@ -60,11 +60,18 @@ class ProjectPickTest {
     }
 
     @Test
-    fun `a picker that returns only separators selects nothing`() {
+    fun `a picker that returns only whitespace selects nothing`() {
         val recorder = Recorder()
         selection(FakePicker("   "), recorder).pickDirectory()
 
         assertTrue(recorder.selected.isEmpty())
+    }
+
+    @Test
+    fun `a filesystem root remains a valid project with a root label`() {
+        val recorder = Recorder()
+        selection(FakePicker(separator()), recorder).pickDirectory()
+        assertEquals(separator() to separator(), recorder.selected.single())
     }
 
     @Test
