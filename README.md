@@ -12,6 +12,13 @@ git-log plugins.
 - **Lazy tree** with compacted middle packages, expand and collapse, and a per-node loading
   state, so a deep project does not stall on open.
 - **Multi-select**: plain click, cmd-click to add, shift-click for a range from the anchor row.
+- **Drag files into a terminal**: drag a row to send its native file reference to the destination.
+  Dragging a selected row includes the selection in tree order, followed by selected items in
+  collapsed folders in path order; dragging an unselected row includes only that item.
+  Folders transfer as folders, with compacted paths using the last folder in the displayed chain.
+  The destination handles the drop; Codebase never sends Enter
+  or reads file contents. Paths containing control characters cannot be dragged. Terminal path
+  quoting is handled by the terminal; Windows shell quoting requires manual verification.
 - **Context menu**: New File, New Folder, Copy Path, Copy Relative Path, Reveal in Finder, Open
   in Terminal, Open With (Editor, Browser, Terminal, Default App), Rename and Delete. Bulk
   variants appear for a multi-selection ("Copy 4 Paths", "Delete 4 Items"), with confirmation.
