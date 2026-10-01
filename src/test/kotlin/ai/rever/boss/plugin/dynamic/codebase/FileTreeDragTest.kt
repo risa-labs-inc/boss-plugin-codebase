@@ -61,6 +61,14 @@ class FileTreeDragTest {
     }
 
     @Test
+    fun `selected compact chain top and end produce one directory reference`() {
+        val end = node("src/main", true)
+        val top = node("src", true).copy(children = listOf(end))
+        val rows = listOf(VisibleRow.Node(top, 0))
+        assertEquals(listOf(end.path), FileTreeDrag.paths(top, setOf(top.path, end.path), rows, top))
+    }
+
+    @Test
     fun `native transfer exposes actual Files preserving special characters and order`() {
         val paths = listOf("photo space.png", "quote's \"image\".png", "café 日本.png", "$(echo nope);&.txt")
             .map { File(root, it).absolutePath }

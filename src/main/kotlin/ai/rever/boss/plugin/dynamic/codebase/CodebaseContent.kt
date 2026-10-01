@@ -125,7 +125,7 @@ fun CodebaseContent(
     var showBulkDeleteDialog by remember { mutableStateOf<List<String>?>(null) } // paths
     var showRenameDialog by remember { mutableStateOf<Pair<String, String>?>(null) } // (path, currentName)
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    var showDragError by remember { mutableStateOf(false) }
+    var dragError by remember { mutableStateOf<String?>(null) }
 
     // Reload tree when project changes
     LaunchedEffect(projectPath) {
@@ -322,8 +322,7 @@ fun CodebaseContent(
                                 selectedPaths = selectedPaths,
                                 onDragTransferData = {
                                     FileTreeDrag.transferData(row.node, selectedPaths, rows, tree) { message ->
-                                        errorMessage = message
-                                        showDragError = true
+                                        dragError = message
                                     }
                                 },
                                 onToggleExpanded = viewModel::toggleExpanded,
@@ -365,17 +364,14 @@ fun CodebaseContent(
         }
     }
 
-    if (showDragError) {
-        val dismiss = {
-            showDragError = false
-            errorMessage = null
-        }
+    dragError?.let { message ->
+        val dismiss = { dragError = null }
         BossDialog(onDismissRequest = dismiss) {
             Surface(shape = RoundedCornerShape(8.dp), color = BossHeaderColor, elevation = 8.dp) {
                 Column(modifier = Modifier.width(360.dp).padding(16.dp)) {
                     Text("Cannot drag these items", color = BossTextColor)
                     Spacer(Modifier.height(12.dp))
-                    Text(errorMessage.orEmpty(), color = BossDarkTextSecondary)
+                    Text(message, color = BossDarkTextSecondary)
                     TextButton(onClick = dismiss, modifier = Modifier.align(Alignment.End)) {
                         Text("OK")
                     }

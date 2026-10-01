@@ -11,7 +11,10 @@ import java.io.File
 
 /** Native file references only; the destination decides how to handle a drop. */
 internal object FileTreeDrag {
-    /** Selection keys refer to chain tops; file operations refer to compact chain ends. */
+    /**
+     * Selection keys refer to chain tops; file operations refer to compact chain ends.
+     * [rows] must be derived from the same tree snapshot as [tree].
+     */
     fun paths(
         source: FileNode,
         selectedPaths: Set<String>,
