@@ -15,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.draganddrop.dragAndDropSource
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -34,6 +35,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draganddrop.DragAndDropTransferData
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -124,6 +126,7 @@ fun CodebaseContent(
     var showBulkDeleteDialog by remember { mutableStateOf<List<String>?>(null) } // paths
     var showRenameDialog by remember { mutableStateOf<Pair<String, String>?>(null) } // (path, currentName)
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var dragError by remember { mutableStateOf<String?>(null) }
 
     // Reload tree when project changes
     LaunchedEffect(projectPath) {
@@ -318,6 +321,13 @@ fun CodebaseContent(
                                 level = row.level,
                                 expandedPaths = expandedPaths,
                                 selectedPaths = selectedPaths,
+                                onDragTransferData = {
+                                    // rows is remembered from this tree snapshot; keep both
+                                    // together so hidden selections resolve against the same tree.
+                                    FileTreeDrag.transferData(row.node, selectedPaths, rows, tree) { message ->
+                                        dragError = message
+                                    }
+                                },
                                 onToggleExpanded = viewModel::toggleExpanded,
                                 onSelectOnly = viewModel::selectOnly,
                                 onToggleSelect = viewModel::toggleSelection,
@@ -351,6 +361,27 @@ fun CodebaseContent(
                         item(key = "project-root-empty-space") {
                             Box(modifier = emptySpaceModifier)
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    dragError?.let { message ->
+        val dismiss = { dragError = null }
+        BossDialog(onDismissRequest = dismiss) {
+            Surface(shape = RoundedCornerShape(8.dp), color = BossHeaderColor, elevation = 8.dp) {
+                Column(modifier = Modifier.width(360.dp).padding(16.dp)) {
+                    Text(
+                        "Cannot drag these items",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = BossThemeColors.TextPrimary
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(message, fontSize = 13.sp, color = BossTextColor)
+                    TextButton(onClick = dismiss, modifier = Modifier.align(Alignment.End)) {
+                        Text("OK", fontSize = 13.sp)
                     }
                 }
             }
@@ -578,7 +609,8 @@ fun FileTreeItem(
     onBulkCopyPaths: (List<String>) -> Unit = {},
     onBulkCopyRelativePaths: (List<String>) -> Unit = {},
     onBulkDelete: (List<String>) -> Unit = {},
-    contextMenuProvider: ContextMenuProvider?
+    contextMenuProvider: ContextMenuProvider?,
+    onDragTransferData: () -> DragAndDropTransferData? = { null }
 ) {
     // IntelliJ's compact middle packages pattern
     val endNode = node.getCompactEndNode()
@@ -735,6 +767,9 @@ fun FileTreeItem(
                 }
             }
         }
+        // Native drag starts after the movement threshold. Selection stays intact
+        // on press, so dragging a selected row preserves the multi-selection.
+        .dragAndDropSource { _ -> onDragTransferData() }
         .combinedClickable(
             onClick = {
                 val modifiers = windowInfo.keyboardModifiers
