@@ -37,7 +37,7 @@ class FileTreeDragTest {
         val selection = linkedSetOf(second.path, hidden.path, first.path)
         val tree = node("root", true).copy(children = listOf(hidden, second, first))
         assertEquals(listOf(first.path, second.path, hidden.path), FileTreeDrag.paths(second, selection, rows, tree))
-        assertNull(FileTreeDrag.paths(second, selection, rows))
+        assertNull(FileTreeDrag.paths(second, selection, rows, null))
         assertEquals(linkedSetOf(second.path, hidden.path, first.path), selection)
     }
 
@@ -46,7 +46,7 @@ class FileTreeDragTest {
         val selected = node("selected.txt")
         val source = node("source.txt")
         val rows = listOf(VisibleRow.Node(selected, 0), VisibleRow.Node(source, 0))
-        assertEquals(listOf(source.path), FileTreeDrag.paths(source, setOf(selected.path), rows))
+        assertEquals(listOf(source.path), FileTreeDrag.paths(source, setOf(selected.path), rows, null))
     }
 
     @Test
@@ -55,9 +55,9 @@ class FileTreeDragTest {
         val end = node("src/main", true).copy(children = listOf(file))
         val top = node("src", true).copy(children = listOf(end))
         val rows = listOf(VisibleRow.Node(top, 0), VisibleRow.Node(file, 1))
-        assertEquals(listOf(end.path), FileTreeDrag.paths(top, setOf(top.path), rows))
-        assertEquals(listOf(end.path, file.path), FileTreeDrag.paths(top, setOf(file.path, top.path), rows))
-        assertEquals(listOf(end.path), FileTreeDrag.paths(top, emptySet(), rows))
+        assertEquals(listOf(end.path), FileTreeDrag.paths(top, setOf(top.path), rows, top))
+        assertEquals(listOf(end.path, file.path), FileTreeDrag.paths(top, setOf(file.path, top.path), rows, top))
+        assertEquals(listOf(end.path), FileTreeDrag.paths(top, emptySet(), rows, top))
     }
 
     @Test
@@ -88,7 +88,7 @@ class FileTreeDragTest {
     @Test
     fun `Compose transfer offers copy only and no completion side effect`() {
         val source = node("photo.png")
-        val data = assertNotNull(FileTreeDrag.transferData(source, emptySet(), emptyList()))
+        val data = assertNotNull(FileTreeDrag.transferData(source, emptySet(), emptyList(), source))
         assertEquals(listOf(DragAndDropTransferAction.Copy), data.supportedActions.toList())
         assertNull(data.onTransferCompleted)
     }
@@ -100,10 +100,10 @@ class FileTreeDragTest {
         val unsafe = node("unsafe\nname.png")
         val rows = listOf(VisibleRow.Node(source, 0), VisibleRow.Node(unsafe, 0))
         val messages = mutableListOf<String>()
-        assertNull(FileTreeDrag.transferData(source, setOf(source.path, unsafe.path), rows, onRejected = messages::add))
+        assertNull(FileTreeDrag.transferData(source, setOf(source.path, unsafe.path), rows, tree = null, onRejected = messages::add))
         assertTrue(messages.single().contains("control characters"))
         messages.clear()
-        assertNull(FileTreeDrag.transferData(source, setOf(source.path, "missing"), rows, onRejected = messages::add))
+        assertNull(FileTreeDrag.transferData(source, setOf(source.path, "missing"), rows, tree = null, onRejected = messages::add))
         assertTrue(messages.single().contains("no longer in the file tree"))
     }
 

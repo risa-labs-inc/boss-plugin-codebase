@@ -19,7 +19,7 @@ internal object FileTreeDrag {
         source: FileNode,
         selectedPaths: Set<String>,
         rows: List<VisibleRow>,
-        tree: FileNode? = null
+        tree: FileNode?
     ): List<String>? {
         if (source.path !in selectedPaths) return listOf(source.getCompactEndNode().path)
         val visible = rows.filterIsInstance<VisibleRow.Node>().map { it.node }
@@ -45,7 +45,7 @@ internal object FileTreeDrag {
         source: FileNode,
         selectedPaths: Set<String>,
         rows: List<VisibleRow>,
-        tree: FileNode? = null,
+        tree: FileNode?,
         onRejected: (String) -> Unit = {}
     ): DragAndDropTransferData? {
         val paths = paths(source, selectedPaths, rows, tree)

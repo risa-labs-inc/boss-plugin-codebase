@@ -621,7 +621,7 @@ fun FileTreeItem(
     val itemPath = endNode.path
     val itemName = if (node.isDirectory) compactDisplayName else node.name
 
-    // Rows are identified by the top of their compact chain - matches tree keys
+    // Rows are identified by the top of their compact chain — matches tree keys
     val isSelected = selectedPaths.contains(node.path)
     val isMultiSelection = isSelected && selectedPaths.size > 1
 

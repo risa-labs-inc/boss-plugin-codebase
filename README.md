@@ -16,6 +16,8 @@ git-log plugins.
   Dragging a selected row includes the selection in tree order, followed by selected items in
   collapsed folders in path order; dragging an unselected row includes only that item.
   Folders transfer as folders, with compacted paths using the last folder in the displayed chain.
+  Selecting both a folder and its descendants transfers each selected item; duplicate references
+  to the same compacted folder are included once.
   The destination handles the drop; Codebase never sends Enter
   or reads file contents. Paths containing control characters cannot be dragged. Terminal path
   quoting is handled by the terminal; Windows shell quoting requires manual verification.
