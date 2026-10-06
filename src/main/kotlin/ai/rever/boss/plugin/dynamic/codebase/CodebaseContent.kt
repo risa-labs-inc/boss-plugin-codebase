@@ -87,7 +87,8 @@ fun CodebaseContent(
     scope: CoroutineScope,
     getWindowId: () -> String?,
     getProjectPath: () -> String?,
-    onSelectProject: ((String, String) -> Unit)?
+    onSelectProject: ((String, String) -> Unit)?,
+    onOpenProject: (() -> Unit)? = null,
 ) {
     val viewModel = remember(fileSystemDataProvider, directoryPickerProvider, splitViewOperations) {
         CodebaseViewModel(
@@ -182,7 +183,7 @@ fun CodebaseContent(
                     Spacer(modifier = Modifier.height(20.dp))
 
                     Button(
-                        onClick = { viewModel.pickDirectory() },
+                        onClick = onOpenProject ?: { viewModel.pickDirectory() },
                         colors = ButtonDefaults.buttonColors(
                             backgroundColor = BossAccentBlue,
                             contentColor = BossThemeColors.TextPrimary
