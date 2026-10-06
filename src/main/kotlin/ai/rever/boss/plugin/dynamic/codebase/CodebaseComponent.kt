@@ -10,6 +10,8 @@ import ai.rever.boss.plugin.api.PluginStorageProvider
 import ai.rever.boss.plugin.api.ProjectData
 import ai.rever.boss.plugin.api.ProjectSearchProvider
 import ai.rever.boss.plugin.api.SplitViewOperations
+import ai.rever.boss.plugin.logging.BossLogger
+import ai.rever.boss.plugin.logging.LogCategory
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.hoverable
@@ -206,7 +208,13 @@ class CodebaseComponent(
         // is sampled: the header has to follow a project switch made anywhere
         // (the top bar, the FILES picker, another panel), and only re-renders
         // when the value actually changes.
-        var projectPath by remember { mutableStateOf(getProjectPath()) }
+        val projectLogger = remember { BossLogger.forComponent("CodebaseProjectPolling") }
+        fun logProjectReadFailure(failure: Exception) {
+            projectLogger.warn(LogCategory.FILE, "Project path read failed; will retry", mapOf("error" to failure.toString()))
+        }
+        var projectPath by remember {
+            mutableStateOf(readProjectPath(getProjectPath, null, ::logProjectReadFailure))
+        }
         var projectRefreshRequest by remember { mutableStateOf(0) }
         val selectionScope = rememberCoroutineScope()
         // Native and IPC pickers may call back after the original click, on
@@ -222,7 +230,10 @@ class CodebaseComponent(
         // an older slow reply must never overwrite a newer confirmed path.
         val projectRefreshMutex = remember { Mutex() }
         suspend fun refreshProjectPath(): Boolean = projectRefreshMutex.withLock {
-            val current = withContext(Dispatchers.IO) { getProjectPath() }
+            val previous = projectPath
+            val current = withContext(Dispatchers.IO) {
+                readProjectPath(getProjectPath, previous, ::logProjectReadFailure)
+            }
             if (current != projectPath) {
                 projectPath = current
                 gitViewModel.onProjectChanged()
@@ -240,7 +251,12 @@ class CodebaseComponent(
         }
         // Recents can arrive before the host commits its window path. A bounded
         // burst catches that ordering and selections that leave recents unchanged.
+        // The initial path was just sampled; only changed triggers need a burst.
+        var lastRefreshTrigger by remember { mutableStateOf(recents to projectRefreshRequest) }
         LaunchedEffect(recents, projectRefreshRequest) {
+            val trigger = recents to projectRefreshRequest
+            if (trigger == lastRefreshTrigger) return@LaunchedEffect
+            lastRefreshTrigger = trigger
             pollForProjectChange(refresh = ::refreshProjectPath)
         }
 
@@ -270,7 +286,9 @@ class CodebaseComponent(
                         contextMenuProvider = contextMenuProvider,
                         scope = scope,
                         getWindowId = getWindowId,
-                        getProjectPath = getProjectPath,
+                        // Keep the tree and its key on the same confirmed sample,
+                        // without another unguarded provider read during composition.
+                        getProjectPath = { projectPath },
                         onSelectProject = onSelectProject,
                         onOpenProject = ::openProject,
                     )
