@@ -60,6 +60,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** The three top tabs of the codebase panel (P7). */
@@ -205,12 +207,18 @@ class CodebaseComponent(
         // when the value actually changes.
         var projectPath by remember { mutableStateOf(getProjectPath()) }
         var projectRefreshRequest by remember { mutableStateOf(0) }
-        fun refreshProjectPath() {
-            val current = getProjectPath()
+        // The idle timer and confirmation burst share one read/update boundary:
+        // an older slow reply must never overwrite a newer confirmed path.
+        val projectRefreshMutex = remember { Mutex() }
+        suspend fun refreshProjectPath(): Boolean = projectRefreshMutex.withLock {
+            val current = withContext(Dispatchers.IO) { getProjectPath() }
             if (current != projectPath) {
                 projectPath = current
                 gitViewModel.onProjectChanged()
                 searchViewModel.clear()
+                true
+            } else {
+                false
             }
         }
         LaunchedEffect(Unit) {
@@ -222,10 +230,7 @@ class CodebaseComponent(
         // Recents can arrive before the host commits its window path. A bounded
         // burst catches that ordering and selections that leave recents unchanged.
         LaunchedEffect(recents, projectRefreshRequest) {
-            repeat(20) {
-                refreshProjectPath()
-                delay(250L)
-            }
+            pollForProjectChange(refresh = ::refreshProjectPath)
         }
 
         Column(modifier = Modifier.fillMaxSize().background(CodebasePalette.Panel)) {
