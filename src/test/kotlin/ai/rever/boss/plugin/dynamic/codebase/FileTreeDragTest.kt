@@ -69,6 +69,21 @@ class FileTreeDragTest {
     }
 
     @Test
+    fun `selected compacted folder hidden in a collapsed parent resolves to its chain end`() {
+        val source = node("source.txt")
+        val end = node("parent/src/main", true)
+        val top = node("parent/src", true).copy(children = listOf(end))
+        val parent = node("parent", true).copy(children = listOf(top, node("parent/other.txt")))
+        val tree = node("root", true).copy(children = listOf(source, parent))
+        val rows = listOf(VisibleRow.Node(source, 0), VisibleRow.Node(parent, 0))
+
+        assertEquals(
+            listOf(source.path, end.path),
+            FileTreeDrag.paths(source, setOf(source.path, top.path, end.path), rows, tree)
+        )
+    }
+
+    @Test
     fun `native transfer exposes actual Files preserving special characters and order`() {
         val paths = listOf("photo space.png", "quote's \"image\".png", "café 日本.png", "$(echo nope);&.txt")
             .map { File(root, it).absolutePath }

@@ -322,6 +322,8 @@ fun CodebaseContent(
                                 expandedPaths = expandedPaths,
                                 selectedPaths = selectedPaths,
                                 onDragTransferData = {
+                                    // rows is remembered from this tree snapshot; keep both
+                                    // together so hidden selections resolve against the same tree.
                                     FileTreeDrag.transferData(row.node, selectedPaths, rows, tree) { message ->
                                         dragError = message
                                     }
@@ -370,11 +372,16 @@ fun CodebaseContent(
         BossDialog(onDismissRequest = dismiss) {
             Surface(shape = RoundedCornerShape(8.dp), color = BossHeaderColor, elevation = 8.dp) {
                 Column(modifier = Modifier.width(360.dp).padding(16.dp)) {
-                    Text("Cannot drag these items", color = BossTextColor)
+                    Text(
+                        "Cannot drag these items",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = BossThemeColors.TextPrimary
+                    )
                     Spacer(Modifier.height(12.dp))
-                    Text(message, color = BossDarkTextSecondary)
+                    Text(message, fontSize = 13.sp, color = BossTextColor)
                     TextButton(onClick = dismiss, modifier = Modifier.align(Alignment.End)) {
-                        Text("OK")
+                        Text("OK", fontSize = 13.sp)
                     }
                 }
             }
