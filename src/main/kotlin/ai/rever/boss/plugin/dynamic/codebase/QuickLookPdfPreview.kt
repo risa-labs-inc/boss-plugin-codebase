@@ -61,15 +61,33 @@ internal object QuickLookPdfPreview {
             } ?: return unavailable()
             return FilePreviewLoader.readImage(output, Files.size(output))
         } finally {
-            process?.let {
-                if (it.isAlive) {
-                    it.destroyForcibly()
-                    it.waitFor(1, TimeUnit.SECONDS)
+            // Cleanup must not replace the original cancellation, failure, or thumbnail result.
+            // Attempt directory cleanup independently even if process shutdown fails.
+            bestEffortCleanup {
+                process?.let {
+                    if (it.isAlive) {
+                        it.destroyForcibly()
+                        it.waitFor(1, TimeUnit.SECONDS)
+                    }
                 }
             }
-            Files.walk(directory).use { paths ->
-                paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+            bestEffortCleanup {
+                Files.walk(directory).use { paths ->
+                    paths.sorted(Comparator.reverseOrder()).forEach { path ->
+                        bestEffortCleanup { Files.deleteIfExists(path) }
+                    }
+                }
             }
+        }
+    }
+
+    private inline fun bestEffortCleanup(action: () -> Unit) {
+        try {
+            action()
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (_: Exception) {
+            // The directory may already be gone, or the process may have exited externally.
         }
     }
 

@@ -79,6 +79,13 @@ class FilePreviewLoaderTest {
     }
 
     @Test
+    fun `UTF8 logs preserve form feeds and ANSI escapes as plain text`() = fixture("output.log") { path ->
+        val value = "first page\u000Csecond page\n\u001B[31mred log text\u001B[0m"
+        Files.writeString(path, value)
+        assertEquals(value, assertIs<FilePreviewBody.Text>(FilePreviewLoader.load(path.toString()).body).value)
+    }
+
+    @Test
     fun `binary and invalid UTF8 do not become text`() = fixture("binary.dat") { path ->
         for (bytes in listOf(byteArrayOf(65, 0, 66), byteArrayOf(65, -1, 66))) {
             Files.write(path, bytes)

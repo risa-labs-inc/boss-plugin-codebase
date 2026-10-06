@@ -129,9 +129,11 @@ internal object FilePreviewLoader {
         if (result.isError) return FilePreviewBody.Message("No preview for binary files or text that is not UTF-8.")
         chars.flip()
         val value = chars.toString().removePrefix("\uFEFF")
-        if (value.any { it.isISOControl() && it != '\n' && it != '\r' && it != '\t' }) {
+        if ('\u0000' in value) {
             return FilePreviewBody.Message("No preview for binary files or text that is not UTF-8.")
         }
+        // Compose renders plain text, so ANSI escapes and form feeds remain literal text,
+        // never terminal commands. A NUL byte remains the binary-content discriminator.
         return FilePreviewBody.Text(value, truncated)
     }
 }

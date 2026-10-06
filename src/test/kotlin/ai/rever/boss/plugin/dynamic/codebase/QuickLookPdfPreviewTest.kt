@@ -21,6 +21,7 @@ class QuickLookPdfPreviewTest {
         private val complete: Boolean,
         private val code: Int = 0,
         private val cancel: Boolean = false,
+        private val failShutdown: Boolean = false,
     ) : Process() {
         var destroyed = false
         override fun getOutputStream() = ByteArrayOutputStream()
@@ -33,7 +34,11 @@ class QuickLookPdfPreviewTest {
         }
         override fun exitValue() = code
         override fun destroy() { destroyed = true }
-        override fun destroyForcibly(): Process { destroyed = true; return this }
+        override fun destroyForcibly(): Process {
+            destroyed = true
+            if (failShutdown) throw IllegalStateException("Process already removed")
+            return this
+        }
         override fun isAlive() = !complete && !destroyed
     }
 
@@ -76,6 +81,50 @@ class QuickLookPdfPreviewTest {
                 Path.of("file.pdf"), createDirectory = { directory }, startProcess = { _, _ -> process }
             )
         }
+        assertTrue(process.destroyed)
+        assertFalse(Files.exists(directory))
+    }
+
+    @Test
+    fun `already deleted output directory does not mask original cancellation`() = runBlocking {
+        val directory = Files.createTempDirectory("quicklook-test-")
+        val process = FakeProcess(false, cancel = true)
+        val error = assertFailsWith<CancellationException> {
+            QuickLookPdfPreview.generate(
+                Path.of("file.pdf"), createDirectory = { directory }, startProcess = { _, target ->
+                    Files.delete(target)
+                    process
+                }
+            )
+        }
+        assertEquals("Selection changed", error.message)
+        assertTrue(process.destroyed)
+        assertFalse(Files.exists(directory))
+    }
+
+    @Test
+    fun `already deleted output directory preserves fallback result`() = runBlocking {
+        val directory = Files.createTempDirectory("quicklook-test-")
+        val body = QuickLookPdfPreview.generate(
+            Path.of("file.pdf"), createDirectory = { directory }, startProcess = { _, target ->
+                Files.delete(target)
+                FakeProcess(true, code = 1)
+            }
+        )
+        assertIs<FilePreviewBody.Message>(body)
+        assertFalse(Files.exists(directory))
+    }
+
+    @Test
+    fun `shutdown failure preserves cancellation and still cleans directory`() = runBlocking {
+        val directory = Files.createTempDirectory("quicklook-test-")
+        val process = FakeProcess(false, cancel = true, failShutdown = true)
+        val error = assertFailsWith<CancellationException> {
+            QuickLookPdfPreview.generate(
+                Path.of("file.pdf"), createDirectory = { directory }, startProcess = { _, _ -> process }
+            )
+        }
+        assertEquals("Selection changed", error.message)
         assertTrue(process.destroyed)
         assertFalse(Files.exists(directory))
     }
