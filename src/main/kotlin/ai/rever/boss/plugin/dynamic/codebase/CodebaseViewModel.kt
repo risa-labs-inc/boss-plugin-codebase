@@ -561,17 +561,9 @@ class CodebaseViewModel(
         return visible + paths.filterNot { it in visibleSet }
     }
 
-    /**
-     * Pick a directory and select it as the project.
-     */
-    fun pickDirectory() {
-        directoryPickerProvider?.pickDirectory { path ->
-            path?.let {
-                val projectName = PathUtils.name(it).ifEmpty { "Unknown" }
-                onSelectProject?.invoke(projectName, it)
-            }
-        }
-    }
+    private val projectSelection = ProjectSelection(directoryPickerProvider, onSelectProject)
+
+    fun pickDirectory() = projectSelection.pickDirectory()
 
     /**
      * Check if the provider is available.

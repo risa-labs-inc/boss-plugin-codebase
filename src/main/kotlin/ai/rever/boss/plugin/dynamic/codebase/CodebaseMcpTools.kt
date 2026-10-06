@@ -118,9 +118,12 @@ internal class CodebaseMcpToolProvider(
                 val p = projects ?: return@McpToolHandler McpToolResult("Project provider unavailable.", isError = true)
                 val path = args.string("path")
                     ?: return@McpToolHandler McpToolResult("Missing required argument: path", isError = true)
-                val name = args.string("name") ?: PathUtils.name(path)
-                p.selectProject(ProjectData(name = name, path = path))
-                McpToolResult("Selected project $name ($path).")
+                val normalizedPath = PathUtils.trimTrailingSeparator(path)
+                if (normalizedPath.isBlank()) return@McpToolHandler McpToolResult("Path must not be blank.", isError = true)
+                val name = args.string("name")?.takeIf { it.isNotBlank() }
+                    ?: PathUtils.name(normalizedPath).ifEmpty { normalizedPath }
+                p.selectProject(ProjectData(name = name, path = normalizedPath))
+                McpToolResult("Selected project $name ($normalizedPath).")
             },
         ),
     )

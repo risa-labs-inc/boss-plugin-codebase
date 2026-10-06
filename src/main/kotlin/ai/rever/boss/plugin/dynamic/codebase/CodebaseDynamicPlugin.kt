@@ -128,12 +128,12 @@ class CodebaseDynamicPlugin : DynamicPlugin {
                 scope = pluginScope ?: error("Plugin scope not available"),
                 getWindowId = getWindowId,
                 getProjectPath = getProjectPath,
-                onSelectProject = { name, path ->
-                    // Use ProjectDataProvider to select the project
-                    projectDataProvider?.selectProject(
-                        ai.rever.boss.plugin.api.ProjectData(name = name, path = path)
-                    )
-                }
+                onSelectProject = projectDataProvider?.let { projects ->
+                    { name, path -> projects.selectProject(ai.rever.boss.plugin.api.ProjectData(name = name, path = path)) }
+                },
+                // Feeds the header's project dropdown. Null on hosts without a
+                // ProjectDataProvider — the dropdown then offers only the picker.
+                recentProjects = projectDataProvider?.recentProjects
             )
         }
         // Contribute codebase_* MCP tools; auto-removed on disable/unload.
