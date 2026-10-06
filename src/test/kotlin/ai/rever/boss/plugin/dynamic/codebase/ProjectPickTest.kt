@@ -31,6 +31,34 @@ class ProjectPickTest {
         ProjectSelection(picker, recorder?.callback)
 
     @Test
+    fun `refresh request waits for asynchronous picker completion`() {
+        lateinit var completePick: (String?) -> Unit
+        val picker = object : DirectoryPickerProvider {
+            override fun pickDirectory(onResult: (String?) -> Unit) { completePick = onResult }
+        }
+        val recorder = Recorder()
+        var refreshRequests = 0
+        selection(picker, recorder).pickDirectory { refreshRequests++ }
+
+        assertEquals(0, refreshRequests)
+        assertTrue(recorder.selected.isEmpty())
+        completePick("${separator()}dev${separator()}Boss${separator()}")
+        assertEquals("Boss" to "${separator()}dev${separator()}Boss", recorder.selected.single())
+        assertEquals(1, refreshRequests)
+    }
+
+    @Test
+    fun `cancelled or unavailable selection does not request a refresh`() {
+        var refreshRequests = 0
+        selection(FakePicker(null), Recorder()).pickDirectory { refreshRequests++ }
+        selection(FakePicker("${separator()}dev${separator()}Boss"), null)
+            .pickDirectory { refreshRequests++ }
+        ProjectSelection(FakePicker("${separator()}dev${separator()}Boss")) { _, _ -> error("unavailable") }
+            .pickDirectory { refreshRequests++ }
+        assertEquals(0, refreshRequests)
+    }
+
+    @Test
     fun `a trailing separator still names the project after its directory`() {
         val recorder = Recorder()
         selection(FakePicker("${separator()}dev${separator()}BossTerm${separator()}"), recorder).pickDirectory()
@@ -109,6 +137,11 @@ class ProjectPickTest {
         assertEquals("   ", PathUtils.trimTrailingSeparator("   ", '/'))
         assertEquals("C:\\", PathUtils.trimTrailingSeparator("C:\\\\", '\\'))
         assertEquals("/dev/My Project ", PathUtils.trimTrailingSeparator("/dev/My Project /", '/'))
+    }
+
+    @Test
+    fun `bare UNC prefix follows the all separator fallback`() {
+        assertEquals("\\", PathUtils.trimTrailingSeparator("\\\\", '\\'))
     }
 
     @Test

@@ -565,8 +565,6 @@ class CodebaseViewModel(
 
     fun pickDirectory() = projectSelection.pickDirectory()
 
-    fun selectProject(name: String, path: String) = projectSelection.selectProject(name, path)
-
     /**
      * Check if the provider is available.
      */

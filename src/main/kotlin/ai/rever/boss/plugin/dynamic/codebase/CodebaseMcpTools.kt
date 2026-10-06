@@ -123,7 +123,7 @@ internal class CodebaseMcpToolProvider(
                 val name = args.string("name")?.takeIf { it.isNotBlank() }
                     ?: PathUtils.name(normalizedPath).ifEmpty { normalizedPath }
                 p.selectProject(ProjectData(name = name, path = normalizedPath))
-                McpToolResult("Selected project $name ($path).")
+                McpToolResult("Selected project $name ($normalizedPath).")
             },
         ),
     )

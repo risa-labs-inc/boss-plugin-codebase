@@ -4,7 +4,6 @@ import ai.rever.boss.plugin.logging.BossLogger
 import ai.rever.boss.plugin.logging.LogCategory
 import ai.rever.boss.plugin.ui.BossPopup
 import ai.rever.boss.plugin.ui.BossPopupAnchoring
-import ai.rever.boss.plugin.ui.BossThemeColors
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -47,12 +46,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-
-private val MenuRowHeight = 34.dp
 
 /**
  * The panel header's project control: the open project's name, and a dropdown
@@ -66,6 +66,7 @@ private val MenuRowHeight = 34.dp
 @Composable
 internal fun ProjectSwitcher(
     projectName: String,
+    hasProject: Boolean,
     entries: List<ProjectSwitcherEntry>,
     onSelect: (ProjectSwitcherEntry) -> Unit,
     onOpenProject: () -> Unit,
@@ -104,26 +105,25 @@ internal fun ProjectSwitcher(
     Column(modifier = modifier) {
         Row(
             modifier = Modifier
-                .clip(RoundedCornerShape(4.dp))
+                .clip(RoundedCornerShape(CodebaseMetrics.InputRadius))
                 .background(
-                    if (hovered || expanded) BossThemeColors.BorderColor.copy(alpha = 0.45f) else Color.Transparent
+                    if (hovered || expanded) CodebasePalette.Hover else Color.Transparent
                 )
                 .clickable(interactionSource = interactionSource, indication = null, role = Role.Button) { expanded = !expanded }
-                .padding(horizontal = 4.dp, vertical = 2.dp),
+                .heightIn(min = CodebaseMetrics.IconButton)
+                .semantics {
+                    contentDescription = "Switch project: $projectName"
+                    stateDescription = if (expanded) "Expanded" else "Collapsed"
+                }
+                .padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = Icons.Outlined.FolderOpen,
-                contentDescription = "Project",
-                tint = BossThemeColors.AccentColor,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = projectName,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                color = BossThemeColors.TextPrimary,
+                fontSize = CodebaseMetrics.SecondaryText,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.2.sp,
+                color = if (hasProject) CodebasePalette.Foreground else CodebasePalette.Muted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 // fill = false so the chevron sits against the name on a wide
@@ -132,9 +132,9 @@ internal fun ProjectSwitcher(
             )
             Icon(
                 imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                contentDescription = "Switch project",
-                tint = BossThemeColors.TextSecondary,
-                modifier = Modifier.size(16.dp)
+                contentDescription = null,
+                tint = CodebasePalette.Secondary,
+                modifier = Modifier.size(CodebaseMetrics.Glyph)
             )
         }
 
@@ -174,10 +174,10 @@ private fun ProjectSwitcherMenu(
     onOpenProject: () -> Unit
 ) {
     Surface(
-        shape = RoundedCornerShape(6.dp),
-        color = BossThemeColors.SurfaceColor,
+        shape = RoundedCornerShape(CodebaseMetrics.ButtonRadius),
+        color = CodebasePalette.Raised,
         elevation = 8.dp,
-        border = BorderStroke(1.dp, BossThemeColors.BorderColor),
+        border = BorderStroke(1.dp, CodebasePalette.BorderStrong),
         modifier = Modifier.widthIn(min = 240.dp, max = 420.dp)
     ) {
         Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -191,7 +191,7 @@ private fun ProjectSwitcherMenu(
                         ProjectRow(entry = entry, onClick = { onSelect(entry) })
                     }
                 }
-                Divider(color = BossThemeColors.BorderColor)
+                Divider(color = CodebasePalette.Divider)
             }
             MenuActionRow(
                 icon = Icons.Outlined.FolderOpen,
@@ -212,15 +212,15 @@ private fun ProjectRow(entry: ProjectSwitcherEntry, onClick: () -> Unit) {
             Icon(
                 imageVector = Icons.Outlined.Check,
                 contentDescription = "Current project",
-                tint = BossThemeColors.AccentColor,
-                modifier = Modifier.size(16.dp)
+                tint = CodebasePalette.Accent,
+                modifier = Modifier.size(CodebaseMetrics.Glyph)
             )
         } else {
             Icon(
                 imageVector = Icons.Outlined.Folder,
                 contentDescription = null,
-                tint = BossThemeColors.TextSecondary,
-                modifier = Modifier.size(16.dp)
+                tint = CodebasePalette.Secondary,
+                modifier = Modifier.size(CodebaseMetrics.Glyph)
             )
         }
         Spacer(modifier = Modifier.width(10.dp))
@@ -230,17 +230,17 @@ private fun ProjectRow(entry: ProjectSwitcherEntry, onClick: () -> Unit) {
         ) {
             Text(
                 text = entry.name,
-                fontSize = 13.sp,
+                fontSize = CodebaseMetrics.PrimaryText,
                 fontWeight = if (entry.isCurrent) FontWeight.Medium else FontWeight.Normal,
-                color = BossThemeColors.TextPrimary,
+                color = CodebasePalette.Foreground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             if (location.isNotEmpty()) {
                 Text(
                     text = location,
-                    fontSize = 10.sp,
-                    color = BossThemeColors.TextSecondary,
+                    fontSize = CodebaseMetrics.MetaText,
+                    color = CodebasePalette.Secondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -255,14 +255,14 @@ private fun MenuActionRow(icon: ImageVector, label: String, onClick: () -> Unit)
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = BossThemeColors.AccentColor,
-            modifier = Modifier.size(16.dp)
+            tint = CodebasePalette.Accent,
+            modifier = Modifier.size(CodebaseMetrics.Glyph)
         )
         Spacer(modifier = Modifier.width(10.dp))
         Text(
             text = label,
-            fontSize = 13.sp,
-            color = BossThemeColors.TextPrimary,
+            fontSize = CodebaseMetrics.PrimaryText,
+            color = CodebasePalette.Foreground,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -276,10 +276,10 @@ private fun MenuRow(onClick: () -> Unit, showHover: Boolean = true, content: @Co
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = MenuRowHeight)
-            .background(if (hovered && showHover) BossThemeColors.BorderColor.copy(alpha = 0.45f) else Color.Transparent)
+            .heightIn(min = CodebaseMetrics.RowHeight)
+            .background(if (hovered && showHover) CodebasePalette.Hover else Color.Transparent)
             .clickable(interactionSource = interactionSource, indication = null, role = Role.Button, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 5.dp),
+            .padding(horizontal = CodebaseMetrics.Gutter, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         content()

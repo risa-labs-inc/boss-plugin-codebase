@@ -23,8 +23,9 @@ class ProjectMcpSelectionTest {
     @Test
     fun `MCP normalizes path before deriving the project name`() = runBlocking {
         val sep = PathUtils.platformSeparator
-        tool.handler.call(McpToolArgs(mapOf("path" to "${sep}dev${sep}Boss$sep")))
+        val result = tool.handler.call(McpToolArgs(mapOf("path" to "${sep}dev${sep}Boss$sep")))
         assertEquals(ProjectData("Boss", "${sep}dev${sep}Boss"), selected.single())
+        assertEquals("Selected project Boss (${sep}dev${sep}Boss).", result.text)
     }
 
     @Test

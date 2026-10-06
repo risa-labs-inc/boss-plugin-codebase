@@ -42,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -207,6 +208,16 @@ class CodebaseComponent(
         // when the value actually changes.
         var projectPath by remember { mutableStateOf(getProjectPath()) }
         var projectRefreshRequest by remember { mutableStateOf(0) }
+        val selectionScope = rememberCoroutineScope()
+        // Native and IPC pickers may call back after the original click, on
+        // another dispatcher. Refresh only after selection was sent to the host,
+        // and keep the state write confined to this panel's composition scope.
+        fun requestProjectRefresh() {
+            selectionScope.launch { projectRefreshRequest++ }
+        }
+        fun openProject() {
+            projectSelector.pickDirectory(onSelectionRequested = ::requestProjectRefresh)
+        }
         // The idle timer and confirmation burst share one read/update boundary:
         // an older slow reply must never overwrite a newer confirmed path.
         val projectRefreshMutex = remember { Mutex() }
@@ -238,13 +249,9 @@ class CodebaseComponent(
                 projectPath = projectPath,
                 entries = remember(recents, projectPath) { ProjectSwitcherEntries.build(recents, projectPath) },
                 onSelect = {
-                    projectSelector.selectProject(it.name, it.path)
-                    projectRefreshRequest++
+                    if (projectSelector.selectProject(it.name, it.path)) requestProjectRefresh()
                 },
-                onOpenProject = {
-                    projectSelector.pickDirectory()
-                    projectRefreshRequest++
-                },
+                onOpenProject = ::openProject,
             )
             CodebaseTabStrip(selected = selectedTab) { tab ->
                 selectedTab = tab
@@ -265,6 +272,7 @@ class CodebaseComponent(
                         getWindowId = getWindowId,
                         getProjectPath = getProjectPath,
                         onSelectProject = onSelectProject,
+                        onOpenProject = ::openProject,
                     )
                 }
 
@@ -296,34 +304,32 @@ private fun CodebaseProjectHeader(
         ?: if (hasProject) PathUtils.name(path).ifEmpty { path } else "No project"
     val display = if (hasProject) collapseHome(path) else "Open a folder in Files"
 
-    CodebaseTooltip(
-        text = if (hasProject) path else "No project selected",
-        modifier = Modifier.fillMaxWidth(),
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(CodebasePalette.Panel)
+            .padding(start = CodebaseMetrics.Gutter, end = CodebaseMetrics.Gutter, top = 5.dp, bottom = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(CodebasePalette.Panel)
-                .padding(start = CodebaseMetrics.Gutter, end = CodebaseMetrics.Gutter, top = 5.dp, bottom = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Inventory2,
-                contentDescription = null,
-                modifier = Modifier.size(CodebaseMetrics.Glyph),
-                tint = if (hasProject) CodebasePalette.Secondary else CodebasePalette.Muted,
+        Icon(
+            imageVector = Icons.Rounded.Inventory2,
+            contentDescription = null,
+            modifier = Modifier.size(CodebaseMetrics.Glyph),
+            tint = if (hasProject) CodebasePalette.Secondary else CodebasePalette.Muted,
+        )
+        Spacer(Modifier.width(6.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            ProjectSwitcher(
+                projectName = name,
+                hasProject = hasProject,
+                entries = entries,
+                onSelect = onSelect,
+                onOpenProject = onOpenProject,
             )
-            Spacer(Modifier.width(6.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                ProjectSwitcher(
-                    projectName = name,
-                    entries = entries,
-                    onSelect = onSelect,
-                    onOpenProject = onOpenProject,
-                )
+            CodebaseTooltip(text = if (hasProject) path else "No project selected") {
                 Text(
                     text = display,
-                    fontSize = 10.sp,
+                    fontSize = CodebaseMetrics.MetaText,
                     fontFamily = FontFamily.Monospace,
                     color = CodebasePalette.Muted,
                     maxLines = 1,

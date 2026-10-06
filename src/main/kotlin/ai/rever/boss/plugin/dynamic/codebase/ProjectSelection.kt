@@ -19,7 +19,7 @@ internal class ProjectSelection(
      * way to tell "dialog cancelled" from "no provider" from "callback ran and
      * the host ignored it".
      */
-    fun pickDirectory() {
+    fun pickDirectory(onSelectionRequested: () -> Unit = {}) {
         val picker = directoryPickerProvider
         if (picker == null) {
             logger.warn(LogCategory.FILE, "No directory picker provider - cannot open a project")
@@ -36,7 +36,9 @@ internal class ProjectSelection(
                     logger.info(LogCategory.FILE, "Project picker dismissed with no directory")
                     return@pickDirectory
                 }
-                selectProject(PathUtils.name(path).ifEmpty { path }, path)
+                if (selectProject(PathUtils.name(path).ifEmpty { path }, path)) {
+                    onSelectionRequested()
+                }
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
@@ -48,8 +50,9 @@ internal class ProjectSelection(
     /**
      * Hand a project to the host so the whole window switches to it, not just
      * this panel. Null callback means the host exposed no ProjectDataProvider.
+     * Returns whether a request reached the host, not whether it was accepted.
      */
-    fun selectProject(name: String, path: String) {
+    fun selectProject(name: String, path: String): Boolean {
         val select = onSelectProject
         if (select == null) {
             logger.warn(
@@ -57,15 +60,17 @@ internal class ProjectSelection(
                 "No project selection callback - project not switched",
                 mapOf("path" to path)
             )
-            return
+            return false
         }
         logger.info(LogCategory.FILE, "Selecting project", mapOf("name" to name, "path" to path))
-        try {
+        return try {
             select(name, PathUtils.trimTrailingSeparator(path))
+            true
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
             logger.warn(LogCategory.FILE, "Project selection failed", mapOf("error" to failure.toString()))
+            false
         }
     }
 }

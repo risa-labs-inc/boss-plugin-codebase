@@ -6,7 +6,7 @@ import ai.rever.boss.plugin.api.ProjectData
  * One row in the header's project dropdown.
  *
  * [path] retains the host's string for row identity. Selection normalizes
- * trailing separators at the ViewModel boundary before returning it to the host.
+ * trailing separators in [ProjectSelection] before returning it to the host.
  */
 internal data class ProjectSwitcherEntry(
     val name: String,
