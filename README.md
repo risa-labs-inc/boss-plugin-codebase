@@ -21,6 +21,19 @@ git-log plugins.
   The destination handles the drop; Codebase never sends Enter
   or reads file contents. Paths containing control characters cannot be dragged. Terminal path
   quoting is handled by the terminal; Windows shell quoting requires manual verification.
+- **File preview**: use the preview button beside EXPLORER, then select one file. The bottom
+  pane shows image thumbnails (PNG, JPEG, GIF first frame, BMP), read-only UTF-8 text excerpts,
+  file size and modification time, plus Open in BOSS and Default app actions. Refresh reloads
+  an edited file; hiding the pane stops its preview work. Multi-selection keeps normal tree
+  behavior and asks you to select one item. Compacted folders preview the displayed final folder.
+  On macOS, PDFs get an offscreen Quick Look thumbnail; other platforms show a document hint.
+  PDF thumbnails need `/usr/bin/qlmanage`, allow at most 64 MiB inputs, and time out after 10 seconds.
+  Temporary output cleanup is attempted after decoding or cancellation. Image input is capped at 16 MiB
+  and 64 megapixels (32,768 pixels per source edge), subsampled to a maximum 512-pixel edge; text reads at most 16 KiB plus one
+  truncation-detection byte. Valid UTF-8 form feeds and ANSI escapes stay literal text; NUL
+  bytes or invalid UTF-8 use the binary fallback. Unsupported, binary, encrypted, damaged, and unreadable files show
+  a fallback message. Other document formats, video, SVG and HEIC thumbnails are not supported.
+  Previews use local files, stay inside BOSS, and add no libraries. No thumbnail grid is included.
 - **Context menu**: New File, New Folder, Copy Path, Copy Relative Path, Reveal in Finder, Open
   in Terminal, Open With (Editor, Browser, Terminal, Default App), Rename and Delete. Bulk
   variants appear for a multi-selection ("Copy 4 Paths", "Delete 4 Items"), with confirmation.

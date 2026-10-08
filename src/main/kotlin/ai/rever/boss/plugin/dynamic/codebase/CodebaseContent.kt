@@ -118,6 +118,7 @@ fun CodebaseContent(
     val showHidden by viewModel.showHidden.collectAsState()
     val selectedPaths by viewModel.selectedPaths.collectAsState()
     val listState = rememberLazyListState()
+    var showPreview by remember { mutableStateOf(false) }
 
     // Dialog state for creating files/folders
     var showCreateFileDialog by remember { mutableStateOf<String?>(null) }
@@ -226,6 +227,28 @@ fun CodebaseContent(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                TooltipArea(
+                    tooltip = {
+                        Surface(color = BossHeaderColor, elevation = 4.dp) {
+                            Text(
+                                if (showPreview) "Hide file preview" else "Show file preview",
+                                color = BossTextColor, fontSize = 11.sp, modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                    }
+                ) {
+                    IconButton(
+                        onClick = { showPreview = !showPreview },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            Icons.Outlined.Preview,
+                            contentDescription = if (showPreview) "Hide file preview" else "Show file preview",
+                            tint = if (showPreview) BossAccentBlue else BossDarkTextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
                 // Hidden on host binaries that predate the showHidden
                 // overloads — the flag would be silently ignored there.
                 if (viewModel.supportsShowHidden) {
@@ -273,7 +296,7 @@ fun CodebaseContent(
             val rows = remember(tree, expandedPaths) {
                 FileTreeUtils.flattenVisibleRows(tree, expandedPaths)
             }
-            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth().weight(if (showPreview) 0.6f else 1f)) {
                 val topPadding = 4.dp
                 val emptySpaceHeight = (maxHeight - topPadding - TreeRowHeight * rows.size).coerceAtLeast(0.dp)
                 val emptySpaceBaseModifier = Modifier
@@ -363,6 +386,22 @@ fun CodebaseContent(
                         }
                     }
                 }
+            }
+            if (showPreview) {
+                CodebaseHRule()
+                val previewPath = remember(tree, selectedPaths, projectPath) {
+                    selectedPaths.singleOrNull()?.takeIf { tree?.path == projectPath }?.let {
+                        FileTreeUtils.findNodeByPath(tree, it)?.getCompactEndNode()?.path
+                    }
+                }
+                FilePreviewPane(
+                    path = previewPath,
+                    selectionCount = selectedPaths.size,
+                    onOpen = viewModel::openFile,
+                    onOpenDefault = viewModel::openWithDefaultApp,
+                    onClose = { showPreview = false },
+                    modifier = Modifier.fillMaxWidth().weight(0.4f)
+                )
             }
         }
     }
