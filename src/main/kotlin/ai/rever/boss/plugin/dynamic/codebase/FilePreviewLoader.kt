@@ -8,6 +8,7 @@ import java.nio.charset.CodingErrorAction
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.BasicFileAttributes
+import javax.imageio.IIOException
 import javax.imageio.ImageIO
 import javax.imageio.stream.MemoryCacheImageInputStream
 import kotlinx.coroutines.CancellationException
@@ -112,6 +113,8 @@ internal object FilePreviewLoader {
                 val sample = ((maxOf(width, height) + MAX_THUMBNAIL_EDGE - 1) / MAX_THUMBNAIL_EDGE).coerceAtLeast(1)
                 val parameters = reader.defaultReadParam.apply { setSourceSubsampling(sample, sample, 0, 0) }
                 return FilePreviewBody.Picture(reader.read(0, parameters), width, height)
+            } catch (_: IIOException) {
+                return FilePreviewBody.Message("This image format is unsupported or damaged.")
             } finally {
                 reader.dispose()
             }

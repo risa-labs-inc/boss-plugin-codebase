@@ -62,6 +62,20 @@ class FilePreviewLoaderTest {
     }
 
     @Test
+    fun `image decode failure retains metadata and opening actions`() = fixture("truncated.png") { path ->
+        ImageIO.write(BufferedImage(8, 8, BufferedImage.TYPE_INT_RGB), "png", path.toFile())
+        // Keep the PNG signature and IHDR so ImageIO selects a decoder, then fail reading pixel data.
+        Files.write(path, Files.readAllBytes(path).copyOf(40))
+        val preview = FilePreviewLoader.load(path.toString())
+        val body = assertIs<FilePreviewBody.Message>(preview.body)
+        assertEquals("This image format is unsupported or damaged.", body.value)
+        assertEquals(Files.size(path), preview.size)
+        assertEquals(Files.getLastModifiedTime(path).toMillis(), preview.modifiedMillis)
+        assertTrue(preview.canOpenInBoss)
+        assertTrue(preview.canOpenDefault)
+    }
+
+    @Test
     fun `text preserves unicode and punctuation and strips only BOM`() = fixture("notes.md") { path ->
         Files.writeString(path, "\uFEFFHello ü 世界\n<not executable>\t'quoted'")
         val body = assertIs<FilePreviewBody.Text>(FilePreviewLoader.load(path.toString()).body)
